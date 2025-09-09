@@ -1,4 +1,4 @@
-# duel_royale.py
+# duel_royale.py +
 # Requires: discord.py >= 2.0
 import asyncio
 import random
