@@ -94,14 +94,21 @@ class EngaugeWallet:
     def _member_url(self, user_id: int) -> str:
         return f"{self.base}/api/v1/servers/{self.server_id}/members/{user_id}"
 
+    async def _json_or_text(self, r: aiohttp.ClientResponse):
+        ct = (r.headers.get("Content-Type") or "").lower()
+        if "application/json" in ct:
+            return await r.json()
+        return {"_text": (await r.text())}
+
     async def get_balance(self, user_id: int) -> int:
         s = await self.session()
         async with s.get(self._member_url(user_id)) as r:
             if r.status == 404:
                 return 0
-            data = await r.json()
+            data = await self._json_or_text(r)
             if r.status != 200:
-                raise RuntimeError(f"Engauge GET {r.status}: {data}")
+                msg = data.get("message") if isinstance(data, dict) else str(data)
+                raise RuntimeError(f"Engauge GET {r.status}: {msg}")
             return int(data.get("currency", 0))
 
     async def credit(self, user_id: int, amount: int) -> int:
@@ -109,28 +116,58 @@ class EngaugeWallet:
             raise ValueError("credit amount must be >= 0")
         s = await self.session()
         url = f"{self._member_url(user_id)}/currency"
-        params = {"amount": str(amount)}
-        async with s.post(url, params=params) as r:
-            data = await r.json()
-            if r.status != 200:
-                raise RuntimeError(f"Engauge credit {r.status}: {data}")
-            return int(data.get("currency", 0))
+
+        # try query param
+        async with s.post(url, params={"amount": str(amount)}) as r:
+            data = await self._json_or_text(r)
+            if r.status == 200:
+                return int(data.get("currency", 0))
+        # try JSON body
+        async with s.post(url, json={"amount": amount}) as r:
+            data = await self._json_or_text(r)
+            if r.status == 200:
+                return int(data.get("currency", 0))
+        # try form body
+        async with s.post(url, data={"amount": str(amount)}) as r:
+            data = await self._json_or_text(r)
+            if r.status == 200:
+                return int(data.get("currency", 0))
+
+        msg = data.get("message") if isinstance(data, dict) else data.get("_text") if isinstance(data, dict) else str(data)
+        raise RuntimeError(f"Engauge credit {r.status}: {msg}")
 
     async def debit(self, user_id: int, amount: int) -> int:
         if amount <= 0:
             raise ValueError("debit amount must be > 0")
+        s = await self.session()
+        url = f"{self._member_url(user_id)}/currency"
+
+        # 1) POST negative amount (preferred)
+        for payload in (
+            {"params": {"amount": str(-amount)}},      # query ?amount=-X
+            {"json": {"amount": -amount}},             # JSON body
+            {"data": {"amount": str(-amount)}},        # form body
+        ):
+            async with s.post(url, **payload) as r:
+                data = await self._json_or_text(r)
+                if r.status == 200:
+                    return int(data.get("currency", 0))
+                if r.status in (400, 409):
+                    msg = data.get("message") if isinstance(data, dict) else data.get("_text", "")
+                    raise RuntimeError(msg or f"Debit refused ({r.status})")
+
+        # 2) Fallback: JSON Patch replace /currency
         current = await self.get_balance(user_id)
         if current < amount:
             raise RuntimeError(f"Insufficient funds: have {current}, need {amount}")
         new_val = current - amount
-        s = await self.session()
-        url = self._member_url(user_id)
         body = [{"op": "replace", "path": "/currency", "value": new_val}]
         headers = {"Content-Type": "application/json-patch+json"}
-        async with s.patch(url, data=json.dumps(body), headers=headers) as r:
-            data = await r.json()
+        async with s.patch(self._member_url(user_id), data=json.dumps(body), headers=headers) as r:
+            data = await self._json_or_text(r)
             if r.status != 200:
-                raise RuntimeError(f"Engauge debit {r.status}: {data}")
+                msg = data.get("message") if isinstance(data, dict) else data.get("_text", "")
+                raise RuntimeError(f"Engauge debit PATCH {r.status}: {msg}")
             return int(data.get("currency", 0))
 
     async def close(self):
