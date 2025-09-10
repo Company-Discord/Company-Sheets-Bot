@@ -93,7 +93,16 @@ async def on_ready():
     try:
         # ---- Global sync (takes up to 1 hour to propagate, but no duplicates) ----
         global_synced = await tree.sync()
-        print(f"Global sync → {len(global_synced)} commands")       
+        command_names = [cmd.name for cmd in global_synced]
+        print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
+        
+        # # ---- For faster testing, also sync to first guild ----
+        # if bot.guilds and os.getenv("IS_DEV") == "True":
+        #     guild = bot.guilds[0]
+        #     guild_synced = await tree.sync(guild=guild)
+        #     guild_names = [cmd.name for cmd in guild_synced]
+        #     print(f"Dev guild sync → {len(guild_synced)} commands to {guild.name}: {', '.join(guild_names)}")
+            
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
@@ -107,7 +116,9 @@ async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands globally…", ephemeral=True)
     try:
         synced = await tree.sync()
-        response = f"✅ Synced **{len(synced)}** commands globally. Commands will be available within 1 hour."
+        command_names = [cmd.name for cmd in synced]
+        print(f"Manual sync → {len(synced)} commands: {', '.join(command_names)}")
+        response = f"✅ Synced **{len(synced)}** commands globally: `{', '.join(command_names)}`."
         await interaction.followup.send(response, ephemeral=True)
         
     except Exception as e:
@@ -123,7 +134,9 @@ async def ping(interaction: discord.Interaction):
 async def test_currency(interaction: discord.Interaction):
     currency_emoji = (os.getenv("CURRENCY_EMOJI") or "").strip() or "💰"
     print(f"Currency emoji: {currency_emoji}")
-    await interaction.response.send_message(f"{currency_emoji}", ephemeral=True)
+    embed = discord.Embed(title="Currency Test", color=discord.Color.blurple())
+    embed.add_field(name="Currency Emoji", value=currency_emoji, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ================= Sheets commands (optional) =================
 @tree.command(name="status", description="Check bot → Google Sheets connectivity.")
