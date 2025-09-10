@@ -537,5 +537,26 @@ class HorseRace(commands.Cog):
         except Exception:
             pass
 
+# --- at the very bottom of horse_race_engauge.py ---
 async def setup(bot: commands.Bot):
-    await bot.add_cog(HorseRace(bot))
+    cog = HorseRaceEngauge(bot)
+    await bot.add_cog(cog)
+
+    # Explicitly bind app commands to the tree (some environments don't auto-register reliably)
+    try:
+        bot.tree.add_command(cog.race_cmd)        # /race
+    except Exception:
+        pass
+    try:
+        bot.tree.add_command(cog.bet_cmd)         # /bet
+    except Exception:
+        pass
+    try:
+        bot.tree.add_command(cog.wallet_group)    # /wallet ...
+    except Exception:
+        pass
+    try:
+        bot.tree.add_command(cog.race_health)     # /race_health
+    except Exception:
+        pass
+
