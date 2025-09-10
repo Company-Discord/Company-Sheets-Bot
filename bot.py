@@ -68,19 +68,17 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 
 # ================= Startup & sync =================
 @bot.event
-async def setup_hook():
-    # Load cogs before first sync
-    for ext in ("duel_royale", "fun"):
-        try:
-            await bot.load_extension(ext)
-            print(f"Loaded {ext} cog ✅")
-        except Exception as e:
-            print(f"Failed loading {ext}: {e}")
+async def on_ready():
     try:
-        await bot.load_extension("horse_race_engauge")
-        print("Loaded horse_race_engauge cog ✅")
+        # Per-guild sync (instant in each server the bot is in)
+        for g in bot.guilds:
+            gobj = discord.Object(id=g.id)
+            synced = await tree.sync(guild=gobj)
+            print(f"Per-guild sync → {len(synced)} commands to {g.name} ({g.id})")
+
+        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
-        print(f"Failed loading horse_race_engauge: {e}")
+        print("Command sync failed:", e)
 
 @bot.event
 async def on_ready():
