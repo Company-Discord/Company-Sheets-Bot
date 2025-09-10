@@ -1,4 +1,4 @@
-# duel_royale.py +
+# duel_royale.py
 # Requires: discord.py >= 2.0
 import asyncio
 import random
@@ -9,32 +9,32 @@ from discord import app_commands
 
 # ========= Tunables =========
 START_HP = 100
-ROUND_DELAY = 1.0  # seconds between narration lines
-CHALLENGE_TIMEOUT = 60  # seconds before a duel request expires
+ROUND_DELAY = 1.0              # seconds between narration lines
+DUELBET_TIMEOUT = 60           # seconds to accept a /duelbet
 
 # Exodia (special)
 EXODIA_IMAGE_URL = "https://i.imgur.com/gXWD1ze.jpeg"
-EXODIA_TRIGGER_CHANCE = 0.01  # 1% chance to trigger Exodia
-EXODIA_DAMAGE = 1000          # fixed damage; unaffected by multipliers
+EXODIA_TRIGGER_CHANCE = 0.01   # 1% chance to trigger Exodia
+EXODIA_DAMAGE = 1000           # fixed damage; unaffected by multipliers
 
 # Mix probabilities for normal rolls (EXODIA is checked first; ULTRA_BUFF second)
-HEAL_CHANCE = 0.15   # 15% of normal rolls try a heal
-BUFF_CHANCE = 0.10   # 10% of normal rolls try a (normal) buff
+HEAL_CHANCE = 0.15
+BUFF_CHANCE = 0.10
 
 # Ultra-rare global buff: 1% chance any turn; next successful action ×1000
 ULTRA_BUFF = {
     "name": "divine intervention",
-    "chance": 0.01,       # 1% GLOBAL, independent of normal buff/heal/attack roll
-    "multiplier": 1000.0  # x1000 on next successful attack/heal (not Exodia)
+    "chance": 0.01,
+    "multiplier": 1000.0
 }
 
 # Shared heal: heals self and also heals every opponent for 60% of the self-heal
 SHARED_HEAL = {
-    "name": "casts Healing Aura",  # shared heal name
-    "range": (25, 40),             # heal range before multiplier
-    "chance": 0.65,                # success chance
-    "splash_ratio": 0.60,          # opponents heal % of the final self-heal
-    "weight": 0.20,                # 20% of heal rolls become this shared heal
+    "name": "casts Healing Aura",
+    "range": (25, 40),
+    "chance": 0.65,
+    "splash_ratio": 0.60,
+    "weight": 0.20,
 }
 
 # BOT-ONLY nuke in /duel
@@ -42,8 +42,7 @@ GODLIKE_ATTACK_NAME = "GOD SMITE"
 GODLIKE_DAMAGE = 1_000_000
 BOT_TAUNT = "You queued into divinity. Kneel, mortal—behold **true damage**."
 
-# ========= Move Pools =========
-# (Higher damage version)
+# ========= Move Pools (higher damage) =========
 NORMAL_ATTACKS = [
     ("bar fight haymaker", (20, 34), 0.75),
     ("cheap tequila uppercut", (22, 36), 0.70),
@@ -79,16 +78,14 @@ NORMAL_ATTACKS = [
     ("PowerPoint presentation slam", (20, 42), 0.70),
 ]
 
-# 5 iconic game-related heals
 HEALS = [
-    ("drinks a Health Potion", (15, 25), 0.80),   # classic RPG
-    ("casts a Healing Spell", (18, 30), 0.70),    # fantasy spell
-    ("uses a Medkit", (20, 35), 0.65),            # shooter staple
-    ("eats a Red Mushroom", (12, 22), 0.85),      # platformer vibe
-    ("rests at a Bonfire", (25, 40), 0.50),       # soulslike
+    ("drinks a Health Potion", (15, 25), 0.80),
+    ("casts a Healing Spell", (18, 30), 0.70),
+    ("uses a Medkit", (20, 35), 0.65),
+    ("eats a Red Mushroom", (12, 22), 0.85),
+    ("rests at a Bonfire", (25, 40), 0.50),
 ]
 
-# Normal buffs: apply a multiplier to the user's NEXT successful attack or heal (not Exodia)
 BUFFS = [
     ("focus stance", (1.25, 1.50), 0.85),
     ("adrenaline surge", (1.40, 1.60), 0.75),
@@ -99,36 +96,26 @@ BUFFS = [
 
 # ========= Helpers =========
 def roll_from_pool(pool):
-    """Pick (name, value_range, chance) and resolve success & magnitude."""
     name, (lo, hi), chance = random.choice(pool)
     success = (random.random() <= chance)
     amount = random.uniform(lo, hi) if success else 0.0
     return name, success, amount
 
 def pick_action():
-    """
-    Decide the action for this turn.
-    Returns a dict with keys:
-      kind ('exodia'|'ultra_buff'|'buff'|'heal'|'attack'), name, success, amount, shared
-    """
-    # 1) Exodia (exact 1%)
+    # 1) Exodia (1%)
     if random.random() < EXODIA_TRIGGER_CHANCE:
         return {'kind': 'exodia', 'name': "**summon all cards of EXODIA**",
                 'success': True, 'amount': EXODIA_DAMAGE, 'shared': False}
-
-    # 2) Global ultra-buff (exact 1% each turn)
+    # 2) Global ultra buff (1%)
     if random.random() < ULTRA_BUFF["chance"]:
         return {'kind': 'ultra_buff', 'name': ULTRA_BUFF["name"],
                 'success': True, 'amount': ULTRA_BUFF["multiplier"], 'shared': False}
-
-    # 3) Otherwise proceed with normal roll between buff/heal/attack
+    # 3) Normal decision
     r = random.random()
     if r < BUFF_CHANCE:
         name, success, mult = roll_from_pool(BUFFS)
         return {'kind': 'buff', 'name': name, 'success': success, 'amount': mult, 'shared': False}
-
     elif r < BUFF_CHANCE + HEAL_CHANCE:
-        # Decide between normal heal and shared heal
         if random.random() < SHARED_HEAL["weight"]:
             lo, hi = SHARED_HEAL["range"]
             success = (random.random() <= SHARED_HEAL["chance"])
@@ -139,18 +126,12 @@ def pick_action():
             name, success, heal = roll_from_pool(HEALS)
             return {'kind': 'heal', 'name': name, 'success': success,
                     'amount': int(round(heal)), 'shared': False}
-
     else:
         name, success, dmg = roll_from_pool(NORMAL_ATTACKS)
         return {'kind': 'attack', 'name': name, 'success': success,
                 'amount': int(round(dmg)), 'shared': False}
 
 def apply_multiplier_if_any(mult_state, attacker_id, base_amount):
-    """
-    If attacker has a stored multiplier, apply it and clear it.
-    Returns (final_amount, consumed_mult or None).
-    Only applies to positive base_amount (i.e., successful damage/heal).
-    """
     mult = mult_state.get(attacker_id)
     if not mult or base_amount <= 0:
         return int(base_amount), None
@@ -159,43 +140,20 @@ def apply_multiplier_if_any(mult_state, attacker_id, base_amount):
     return final, mult
 
 def fmt_hp(name: str, val: int) -> str:
-    """Pretty HP display with KO marker when <= 0."""
     return f"{name}: **{val}**" + (" ☠️" if val <= 0 else "")
 
 # ========= Cog =========
 class DuelRoyale(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Active users in a live duel/royale
+        self.active_players: set[int] = set()
+        # Pending /duelbet: target_id -> {'challenger': int, 'message_id': int, 'expires': float}
+        self.pending_bets: dict[int, dict] = {}
 
-        # Concurrency/state
-        self.active_players: set[int] = set()        # users in any active duel/royale
-        self.pending_by_target: dict[int, dict] = {} # target_id -> pending request data
-        self.pending_by_challenger: dict[int, int] = {} # challenger_id -> target_id
-
-    # ----- Internal state helpers -----
-    def _is_busy(self, user_id: int) -> bool:
-        """True if user is in an active duel/royale or has an open (sent/received) duel request."""
-        return (
-            user_id in self.active_players or
-            user_id in self.pending_by_target or
-            user_id in self.pending_by_challenger
-        )
-
-    def _expire_if_needed(self, user_id: int):
-        """Expire target's pending request if timed out."""
-        data = self.pending_by_target.get(user_id)
-        if not data:
-            return
-        if time.time() >= data['expires']:
-            ch = data['challenger']
-            self.pending_by_target.pop(user_id, None)
-            if self.pending_by_challenger.get(ch) == user_id:
-                self.pending_by_challenger.pop(ch, None)
-
-    async def _start_duel_runtime(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member):
-        """Runs a locked 1v1 duel with all features."""
+    # ----- core fight runner -----
+    async def _run_duel(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member):
         followup = interaction.followup
-
         names = {p1.id: p1.display_name, p2.id: p2.display_name}
         hp = {p1.id: START_HP, p2.id: START_HP}
         next_multiplier = {}
@@ -207,14 +165,12 @@ class DuelRoyale(commands.Cog):
         attacker, defender = p1.id, p2.id
         round_no = 1
 
-        # lock participants
         self.active_players.add(p1.id)
         self.active_players.add(p2.id)
         try:
             while hp[attacker] > 0 and hp[defender] > 0:
-                # Bot-only GOD SMITE
                 if attacker == bot_id:
-                    await followup.send(f"🗣️ **{names[attacker]}**: You queued into divinity. Kneel, mortal—behold **true damage**.")
+                    await followup.send(f"🗣️ **{names[attacker]}**: {BOT_TAUNT}")
                     act = {'kind': 'attack','name': GODLIKE_ATTACK_NAME,'success': True,'amount': GODLIKE_DAMAGE,'shared': False}
                 else:
                     act = pick_action()
@@ -284,108 +240,103 @@ class DuelRoyale(commands.Cog):
             await followup.send(line, allowed_mentions=discord.AllowedMentions.none())
             await asyncio.sleep(ROUND_DELAY)
 
-    # -------- /duel (creates a challenge) --------
-    @app_commands.command(name="duel", description="Challenge someone to a 1v1 duel (they must accept).")
-    @app_commands.describe(opponent="Who do you want to challenge?")
+    # ----- Instant /duel -----
+    @app_commands.command(name="duel", description="Start a 1v1 duel immediately.")
+    @app_commands.describe(opponent="Who do you want to duel?")
     async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
         author = interaction.user
-
         if opponent.id == author.id:
             return await interaction.response.send_message("You can’t duel yourself.", ephemeral=True)
         if opponent.bot and opponent.id != self.bot.user.id:
             return await interaction.response.send_message("You can’t duel that bot.", ephemeral=True)
 
-        # Expire stale pendings
-        self._expire_if_needed(author.id)
-        self._expire_if_needed(opponent.id)
-
-        # Busy checks (block also for Royale participation)
-        if self._is_busy(author.id):
-            return await interaction.response.send_message(
-                "You already have an active duel/royale or a pending duel request. Finish or cancel it first.",
-                ephemeral=True
-            )
-        if self._is_busy(opponent.id):
-            return await interaction.response.send_message(
-                f"{opponent.display_name} is already in a duel/royale or has a pending duel request.",
-                ephemeral=True
-            )
-
-        # Create pending challenge
-        now = time.time()
-        self.pending_by_target[opponent.id] = {
-            'challenger': author.id,
-            'guild': interaction.guild_id,
-            'channel': interaction.channel_id,
-            'expires': now + CHALLENGE_TIMEOUT
-        }
-        self.pending_by_challenger[author.id] = opponent.id
-
-        await interaction.response.send_message(
-            f"📨 **Challenge sent!** {opponent.mention}, type `/duel_accept` to accept or `/duel_decline` to decline "
-            f"(expires in {CHALLENGE_TIMEOUT}s).",
-            allowed_mentions=discord.AllowedMentions(users=True)
-        )
-
-    # -------- /duel_accept --------
-    @app_commands.command(name="duel_accept", description="Accept your pending duel challenge.")
-    async def duel_accept(self, interaction: discord.Interaction):
-        target = interaction.user
-        self._expire_if_needed(target.id)
-        data = self.pending_by_target.get(target.id)
-        if not data:
-            return await interaction.response.send_message("You have no pending duel requests.", ephemeral=True)
-
-        if data['guild'] != interaction.guild_id or data['channel'] != interaction.channel_id:
-            return await interaction.response.send_message("This request was not created in this channel/server.", ephemeral=True)
-
-        challenger_id = data['challenger']
-
-        # If either party got busy (duel/royale/pending), bail
-        if self._is_busy(challenger_id) and self.pending_by_challenger.get(challenger_id) != target.id:
-            self.pending_by_target.pop(target.id, None)
-            if self.pending_by_challenger.get(challenger_id) == target.id:
-                self.pending_by_challenger.pop(challenger_id, None)
-            return await interaction.response.send_message("The challenge is no longer valid.", ephemeral=True)
-        if self._is_busy(target.id):
-            # (Shouldn’t happen since we're looking at their own pending, but be safe)
-            return await interaction.response.send_message("You’re currently busy.", ephemeral=True)
-
-        challenger = interaction.guild.get_member(challenger_id)
-        if not challenger:
-            self.pending_by_target.pop(target.id, None)
-            self.pending_by_challenger.pop(challenger_id, None)
-            return await interaction.response.send_message("Challenger is no longer here.", ephemeral=True)
-
-        # Clear pending, start duel runtime
-        self.pending_by_target.pop(target.id, None)
-        self.pending_by_challenger.pop(challenger_id, None)
+        # Busy checks (active duels/royales OR pending duelbet)
+        if author.id in self.active_players or opponent.id in self.active_players:
+            return await interaction.response.send_message("Someone is already in a fight.", ephemeral=True)
+        if author.id in self.pending_bets or opponent.id in self.pending_bets:
+            return await interaction.response.send_message("Someone has a pending /duelbet.", ephemeral=True)
 
         await interaction.response.defer(thinking=False)
-        await self._start_duel_runtime(interaction, challenger, target)
+        await self._run_duel(interaction, author, opponent)
 
-    # -------- /duel_decline --------
-    @app_commands.command(name="duel_decline", description="Decline your pending duel challenge.")
-    async def duel_decline(self, interaction: discord.Interaction):
-        target = interaction.user
-        self._expire_if_needed(target.id)
-        data = self.pending_by_target.get(target.id)
-        if not data:
-            return await interaction.response.send_message("You have no pending duel requests.", ephemeral=True)
+    # ----- Button-based /duelbet (requires accept/decline) -----
+    class BetView(discord.ui.View):
+        def __init__(self, cog: "DuelRoyale", challenger_id: int, target_id: int, note: str | None):
+            super().__init__(timeout=DUELBET_TIMEOUT)
+            self.cog = cog
+            self.challenger_id = challenger_id
+            self.target_id = target_id
+            self.note = note
 
-        challenger_id = data['challenger']
-        self.pending_by_target.pop(target.id, None)
-        if self.pending_by_challenger.get(challenger_id) == target.id:
-            self.pending_by_challenger.pop(challenger_id, None)
+        async def interaction_check(self, itx: discord.Interaction) -> bool:
+            # Only the target can press buttons
+            if itx.user.id != self.target_id:
+                await itx.response.send_message("Only the challenged user can respond.", ephemeral=True)
+                return False
+            return True
 
-        await interaction.response.send_message("You declined the duel request.")
+        @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+        async def accept(self, itx: discord.Interaction, button: discord.ui.Button):
+            # Remove pending
+            self.cog.pending_bets.pop(self.target_id, None)
+            # Busy checks again right before starting
+            if self.challenger_id in self.cog.active_players or self.target_id in self.cog.active_players:
+                return await itx.response.edit_message(content="Fight can’t start; someone is already busy.", view=None)
+            await itx.response.edit_message(content="✅ Bet accepted! Starting duel…", view=None)
+            # Start duel
+            challenger = itx.guild.get_member(self.challenger_id)
+            target = itx.guild.get_member(self.target_id)
+            fake_interaction = itx  # reuse followup pipe
+            await self.cog._run_duel(fake_interaction, challenger, target)
 
-    # -------- /royale (now also blocked by busy-state and locks participants) --------
-    @app_commands.command(name="royale", description="Start a multi-player battle royale (blocked if anyone is busy).")
+        @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
+        async def decline(self, itx: discord.Interaction, button: discord.ui.Button):
+            self.cog.pending_bets.pop(self.target_id, None)
+            await itx.response.edit_message(content="❌ Bet declined.", view=None)
+
+        async def on_timeout(self):
+            # Clean up if still pending
+            self.cog.pending_bets.pop(self.target_id, None)
+            # Try to edit the original message if we can
+            try:
+                for child in self.children:
+                    child.disabled = True
+            except Exception:
+                pass
+
+    @app_commands.command(name="duelbet", description="Challenge someone to a duel that requires their acceptance (with buttons).")
+    @app_commands.describe(opponent="Who do you want to challenge?", note="Optional note (e.g., what you're betting)")
+    async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, note: str | None = None):
+        author = interaction.user
+        if opponent.id == author.id:
+            return await interaction.response.send_message("You can’t duel yourself.", ephemeral=True)
+        if opponent.bot and opponent.id != self.bot.user.id:
+            return await interaction.response.send_message("You can’t duel that bot.", ephemeral=True)
+
+        # Busy checks
+        if author.id in self.active_players or opponent.id in self.active_players:
+            return await interaction.response.send_message("Someone is already in a fight.", ephemeral=True)
+        if author.id in self.pending_bets or opponent.id in self.pending_bets:
+            return await interaction.response.send_message("Someone already has a pending /duelbet.", ephemeral=True)
+
+        view = DuelRoyale.BetView(self, author.id, opponent.id, note)
+        msg = f"📨 **{author.mention}** challenged {opponent.mention} to a **bet duel**!"
+        if note:
+            msg += f"  _({note})_"
+        await interaction.response.send_message(msg, view=view, allowed_mentions=discord.AllowedMentions(users=True))
+        # mark pending
+        sent = await interaction.original_response()
+        self.pending_bets[opponent.id] = {
+            'challenger': author.id,
+            'message_id': sent.id,
+            'expires': time.time() + DUELBET_TIMEOUT
+        }
+
+    # ----- Instant /royale -----
+    @app_commands.command(name="royale", description="Start a multi-player battle royale immediately.")
     @app_commands.describe(
         player1="Optional player", player2="Optional player", player3="Optional player",
-        player4="Optional player", player5="Optional player", player6="Optional player",
-        player7="Optional player",
+        player4="Optional player", player5="Optional player", player6="Optional player", player7="Optional player",
     )
     async def royale(
         self,
@@ -414,13 +365,12 @@ class DuelRoyale(commands.Cog):
                 ephemeral=True
             )
 
-        # Busy checks for Royale: block if ANY participant is busy (active duel/royale or pending duel request)
-        busy_users = [m.display_name for m in roster if self._is_busy(m.id)]
-        if busy_users:
-            pretty = ", ".join(f"**{n}**" for n in busy_users)
+        # Busy blocks: active fight or pending duelbet
+        busy = [m.display_name for m in roster if (m.id in self.active_players or m.id in self.pending_bets)]
+        if busy:
+            pretty = ", ".join(f"**{n}**" for n in busy)
             return await interaction.response.send_message(
-                f"Cannot start Royale. These users are busy (duel/royale/pending request): {pretty}",
-                ephemeral=True
+                f"Cannot start Royale. Busy users (duel/royale/pending /duelbet): {pretty}", ephemeral=True
             )
 
         await interaction.response.defer(thinking=False)
@@ -437,13 +387,11 @@ class DuelRoyale(commands.Cog):
             f"All start at {START_HP} HP. Last one standing wins!"
         ])
 
-        # lock everyone for the duration of the Royale
+        # lock everyone
         for m in roster:
             self.active_players.add(m.id)
 
         round_no = 1
-        def fmt(name, pid): return fmt_hp(name, hp[pid])
-
         try:
             while len(alive) > 1:
                 await followup.send(f"— **Round {round_no}** —")
@@ -456,7 +404,6 @@ class DuelRoyale(commands.Cog):
                     if not targets:
                         break
                     defender = random.choice(targets)
-
                     act = pick_action()
 
                     if act['kind'] == 'exodia':
@@ -481,7 +428,7 @@ class DuelRoyale(commands.Cog):
                         next_multiplier[attacker] = float(act['amount'])
                         l1 = f"{names[attacker]} is blessed with **{act['name']}**!"
                         l2 = f"Next move ×{act['amount']:.0f}."
-                        l3 = f"{fmt(names[attacker], attacker)}"
+                        l3 = f"{fmt_hp(names[attacker], hp[attacker])}"
 
                     elif act['kind'] == 'buff':
                         if act['success']:
@@ -491,7 +438,7 @@ class DuelRoyale(commands.Cog):
                         else:
                             l1 = f"{names[attacker]} attempts {act['name']}…"
                             l2 = "but it **fails**."
-                        l3 = f"{fmt(names[attacker], attacker)}"
+                        l3 = f"{fmt_hp(names[attacker], hp[attacker])}"
 
                     elif act['kind'] == 'heal':
                         if act['success']:
@@ -508,11 +455,11 @@ class DuelRoyale(commands.Cog):
                             else:
                                 l1 = f"{names[attacker]} {act['name']}!"
                                 l2 = f"Restores **{heal} HP**" + (f" (buff ×{consumed:.2f})" if consumed else "")
-                            l3 = f"{fmt(names[attacker], attacker)}"
+                            l3 = f"{fmt_hp(names[attacker], hp[attacker])}"
                         else:
                             l1 = f"{names[attacker]} tries to {act['name']}…"
                             l2 = "but it **fails**."
-                            l3 = f"{fmt(names[attacker], attacker)}"
+                            l3 = f"{fmt_hp(names[attacker], hp[attacker])}"
 
                     else:  # attack
                         if act['success']:
@@ -523,7 +470,7 @@ class DuelRoyale(commands.Cog):
                         else:
                             l1 = f"{names[attacker]} uses {act['name']} on {names[defender]}!"
                             l2 = "It **misses**!"
-                        l3 = f"{fmt(names[defender], defender)}"
+                        l3 = f"{fmt_hp(names[defender], hp[defender])}"
 
                     await self.narrate(followup, [l1, l2, l3])
 
@@ -540,7 +487,6 @@ class DuelRoyale(commands.Cog):
             winner_id = alive[0]
             await followup.send(f"🏆 **{names[winner_id]}** wins the Royale!")
         finally:
-            # unlock everyone
             for m in roster:
                 self.active_players.discard(m.id)
 
