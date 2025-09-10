@@ -91,17 +91,9 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     try:
-        # ---- Global sync first ----
+        # ---- Global sync (takes up to 1 hour to propagate, but no duplicates) ----
         global_synced = await tree.sync()
-        print(f"Global sync → {len(global_synced)} commands")
-        
-        # ---- Per-guild sync (stable IDs, instant in each server) ----
-        for g in bot.guilds:
-            gobj = discord.Object(id=g.id)
-            tree.copy_global_to(guild=gobj)
-            synced = await tree.sync(guild=gobj)
-            print(f"Per-guild sync → {len(synced)} commands to {g.name} ({g.id})")
-
+        print(f"Global sync → {len(global_synced)} commands")       
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
@@ -110,36 +102,12 @@ async def on_ready():
 # ================= Admin sync helpers =================
 
 @app_commands.default_permissions(administrator=True)
-@tree.command(name="sync_commands", description="Force-resync slash commands to ALL servers (admin only).")
+@tree.command(name="sync_commands", description="Force-resync slash commands globally (admin only).")
 async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.send_message("Syncing commands to all servers…", ephemeral=True)
+    await interaction.response.send_message("Syncing commands globally…", ephemeral=True)
     try:
-        total_synced = 0
-        server_count = 0
-        sync_results = []
-        
-        for guild in bot.guilds:
-            try:
-                gobj = discord.Object(id=guild.id)
-                tree.copy_global_to(guild=gobj)
-                synced = await tree.sync(guild=gobj)
-                total_synced += len(synced)
-                server_count += 1
-                sync_results.append(f"✅ {guild.name}: {len(synced)} commands")
-            except Exception as guild_error:
-                sync_results.append(f"❌ {guild.name}: {guild_error}")
-                print(f"sync_commands error for {guild.name}: {guild_error}")
-        
-        # Prepare response message
-        summary = f"✅ Synced **{total_synced}** total commands across **{server_count}** servers."
-        
-        # If there are few servers, show details; otherwise just show summary
-        if len(bot.guilds) <= 5:
-            details = "\n".join(sync_results)
-            response = f"{summary}\n\n**Details:**\n{details}"
-        else:
-            response = summary
-            
+        synced = await tree.sync()
+        response = f"✅ Synced **{len(synced)}** commands globally. Commands will be available within 1 hour."
         await interaction.followup.send(response, ephemeral=True)
         
     except Exception as e:

@@ -541,16 +541,4 @@ async def setup(bot: commands.Bot):
     cog = HorseRace(bot)  
     await bot.add_cog(cog)
 
-    
-    for cmd in (
-        getattr(cog, "race_cmd", None),    
-        getattr(cog, "bet_cmd", None),     
-        getattr(cog, "wallet", None),      
-        getattr(cog, "race_health", None), 
-    ):
-        try:
-            if cmd is not None:
-                bot.tree.add_command(cmd)
-        except Exception:
-            pass
 
