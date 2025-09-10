@@ -67,33 +67,33 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
 
-# ================= Startup & sync ==================
+# ================= Startup & sync =================
 @bot.event
 async def setup_hook():
+    # Load cogs before the first sync
     try:
         await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
     try:
-        await bot.load_extension("fun")  # <--- add this
+        await bot.load_extension("fun")  # /rat lives here
         print("Loaded fun cog ✅")
     except Exception as e:
         print(f"Failed loading fun: {e}")
+
 @bot.event
 async def on_ready():
     try:
         print("Registered commands in code:", [c.name for c in tree.get_commands()])
 
         # Per-guild sync (instant in each server)
-        total = 0
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
             synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
-            total += len(synced)
 
-        # Global sync (rolls out everywhere; may take longer to appear)
+        # Global sync (rolls out everywhere; may take a bit)
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
 
