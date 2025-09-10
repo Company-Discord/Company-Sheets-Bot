@@ -70,34 +70,54 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 # ================= Startup & sync =================
 @bot.event
 async def setup_hook():
-    # Load cogs before the first sync
+    # Load cogs before the bot connects
     try:
         await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
 
-@bot.event
-async def on_ready():
+async def sync_all_commands():
+    """Sync commands to all guilds and globally"""
     try:
-        print("Registered commands in code:", [c.name for c in tree.get_commands()])
+        commands = tree.get_commands()
+        print(f"Registered commands in code: {[c.name for c in commands]} (Total: {len(commands)})")
+        
+        # List all commands with their types
+        for cmd in commands:
+            print(f"  - {cmd.name}: {type(cmd).__name__}")
 
-        # Per-guild sync (instant in each server)
+        # Per-guild sync (instant in each server, handles guild-specific commands)
         total = 0
+        print(f"Syncing commands to {len(bot.guilds)} guilds")
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
+            print(f"Attempting to sync to guild {g.name} ({g.id})...")
             synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
+            if synced:
+                print(f"  Synced command names: {[cmd.name for cmd in synced]}")
             total += len(synced)
 
-        # Global sync (rolls out everywhere; may take longer to appear)
+        # Global sync (works everywhere; may take a few minutes to appear)
+        print("Attempting global sync...")
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
-
-        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+        if synced_global:
+            print(f"  Global synced command names: {[cmd.name for cmd in synced_global]}")
     except Exception as e:
         print("Command sync failed:", e)
+        import traceback
+        traceback.print_exc()
 
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    print(f"Bot is in {len(bot.guilds)} guild(s)")
+    
+    # Sync commands now that bot is fully connected and has guild information
+    await sync_all_commands()
+        
 # ================= Utility / admin =================
 @app_commands.default_permissions(administrator=True)
 @tree.command(name="sync_commands", description="Force-resync slash commands to THIS server (admin only).")
@@ -128,7 +148,13 @@ async def status(interaction: discord.Interaction):
 
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
-    await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
+    print(f"Ping command received from {interaction.user} in {interaction.guild.name} ({interaction.guild_id})")
+    await interaction.response.send_message(f"Local Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
+
+@tree.command(name="test_example", description="Simple test command to verify bot is responding.", guilds=[discord.Object(id=1415122720437571666)])
+async def test(interaction: discord.Interaction):
+    print(f"Test command received from {interaction.user} in {interaction.guild.name} ({interaction.guild_id})")
+    await interaction.response.send_message(f"✅ Message received and acknowledged! Bot is working correctly.")
 
 # ================= Sheets commands =================
 @tree.command(name="append", description="Append a row: date, user, category.")
