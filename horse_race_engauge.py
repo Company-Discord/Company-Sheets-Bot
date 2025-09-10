@@ -20,7 +20,7 @@ def cur() -> str:
 def fmt(n: int) -> str:
     return f"{cur()} {n:,}"
 
-# ================= Logger ====================
+# ================= Logger =====================
 class TxLog:
     def __init__(self, bot: commands.Bot):
         self.bot = bot
