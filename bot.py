@@ -1,4 +1,4 @@
-# bot.py test
+# bot.py
 import os
 import json
 import asyncio
@@ -25,14 +25,13 @@ SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")    # optional alter
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
-# ================= Discord bot (use commands.Bot, not Client) =================
+# ================= Discord bot =================
 intents = discord.Intents.default()
-intents.members = True  # helpful for display_name, optional
+intents.members = True  # optional; helps with display names
 
-bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for slash, fine to keep
-tree = bot.tree  # use the bot's built-in CommandTree
+bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for slash
+tree = bot.tree
 
-# A simple write lock for Sheets operations
 write_lock = asyncio.Lock()
 
 # ================= Google Sheets helpers =================
@@ -71,7 +70,7 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 # ================= Startup & sync =================
 @bot.event
 async def setup_hook():
-    # Load the duel system cog BEFORE first sync
+    # Load cogs before the first sync
     try:
         await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
@@ -82,12 +81,19 @@ async def setup_hook():
 async def on_ready():
     try:
         print("Registered commands in code:", [c.name for c in tree.get_commands()])
+
+        # Per-guild sync (instant in each server)
         total = 0
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
-            synced = await tree.sync(guild=gobj)   # instant per-guild sync
+            synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
             total += len(synced)
+
+        # Global sync (rolls out everywhere; may take longer to appear)
+        synced_global = await tree.sync()
+        print(f"Synced {len(synced_global)} commands globally")
+
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
@@ -107,13 +113,16 @@ async def sync_commands(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"Sync failed: `{e}`", ephemeral=True)
 
-# ================= Bot health commands =================
+# ================= Bot health =================
 @tree.command(name="status", description="Check bot → Google Sheets connectivity.")
 async def status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
         _, _, ws = open_sheet()
-        await interaction.followup.send(f"✅ Connected to **{ws.spreadsheet.title}** / **{ws.title}**.", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Connected to **{ws.spreadsheet.title}** / **{ws.title}**.",
+            ephemeral=True
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Sheets error: `{e}`", ephemeral=True)
 
