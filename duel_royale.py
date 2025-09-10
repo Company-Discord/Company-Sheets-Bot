@@ -160,6 +160,10 @@ class DuelRoyale(commands.Cog):
         
     async def cog_load(self):
         """Initialize the UnbelievaBoat client when cog loads."""
+        if(os.getenv("IS_DEV") == "True"):
+            API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN_DEV", "your-api-token-here")
+        else:
+            API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN", "your-api-token-here")
         self.unb_client = Client(API_TOKEN)
         print("✅ UnbelievaBoat client initialized")
         

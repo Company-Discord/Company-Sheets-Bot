@@ -119,6 +119,12 @@ async def sync_commands(interaction: discord.Interaction):
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
+@tree.command(name="test_currency", description="Test command that replies with the currency emoji.")
+async def test_currency(interaction: discord.Interaction):
+    currency_emoji = (os.getenv("CURRENCY_EMOJI") or "").strip() or "💰"
+    print(f"Currency emoji: {currency_emoji}")
+    await interaction.response.send_message(f"{currency_emoji}", ephemeral=True)
+
 # ================= Sheets commands (optional) =================
 @tree.command(name="status", description="Check bot → Google Sheets connectivity.")
 async def status(interaction: discord.Interaction):
@@ -183,6 +189,8 @@ async def setcell(interaction: discord.Interaction, a1: str, value: str, workshe
             await interaction.followup.send(f"✅ Set **{a1}** → `{value}`.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
+
+            
 
 # ================= Run =================
 if __name__ == "__main__":
