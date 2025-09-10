@@ -20,7 +20,7 @@ def cur() -> str:
 def fmt(n: int) -> str:
     return f"{cur()} {n:,}"
 
-# ================= Logger ===================
+# ================= Logger ====================
 class TxLog:
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -141,7 +141,7 @@ class Engauge:
         if self._session and not self._session.closed:
             await self._session.close()
 
-# ================= Game state =============
+# ================= Game state =============+
 HORSE_SETS = [
     ["Peppa Pig", "Piglet", "Ms. Piggy", "Porky Pig", "George Pig", "Charlotte"],
     ["Pumba", "Tom", "Jerry", "Bugs Bunny", "Daffy Duck", "Garfield"],
