@@ -66,38 +66,41 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
 
-# ================= Startup & sync =================
+@bot.event
+async def setup_hook():
+    # --- Load cogs (adjust module path if yours are in /cogs) ---
+    try:
+        await bot.load_extension("duel_royale")            # or: "cogs.duel_royale"
+        print("Loaded duel_royale cog ✅")
+    except Exception as e:
+        print(f"Failed loading duel_royale: {e}")
+
+    try:
+        await bot.load_extension("fun")                    # or: "cogs.fun"
+        print("Loaded fun cog ✅")
+    except Exception as e:
+        print(f"Failed loading fun: {e}")
+
+    try:
+        await bot.load_extension("horse_race_engauge")     # or: "cogs.horse_race_engauge"
+        print("Loaded horse_race_engauge cog ✅")
+    except Exception as e:
+        print(f"Failed loading horse_race_engauge: {e}")
+
 @bot.event
 async def on_ready():
     try:
-        # Per-guild sync (instant in each server the bot is in)
+        # ---- Per-guild sync ONLY (stable IDs, instant in each server) ----
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
             synced = await tree.sync(guild=gobj)
             print(f"Per-guild sync → {len(synced)} commands to {g.name} ({g.id})")
 
+        # (No global sync here to avoid ID churn)
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
 
-@bot.event
-async def on_ready():
-    try:
-        # Per-guild sync (instant in each server)
-        for g in bot.guilds:
-            gobj = discord.Object(id=g.id)
-            # copy global set to this guild, then sync it
-            tree.copy_global_to(guild=gobj)
-            synced = await tree.sync(guild=gobj)
-            print(f"Per-guild sync → {len(synced)} commands to {g.name} ({g.id})")
-
-        # Keep a global sync too (nice to have everywhere eventually)
-        synced_global = await tree.sync()
-        print(f"Global sync → {len(synced_global)} commands")
-
-        print(f"Logged in as {bot.user} (ID: {bot.user.id})")
-    except Exception as e:
-        print("Command sync failed:", e)
 
 # ================= Admin sync helpers =================
 @app_commands.default_permissions(administrator=True)
