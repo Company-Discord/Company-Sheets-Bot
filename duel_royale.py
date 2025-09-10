@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN", "your-api-token-here")
-GUILD_ID = os.getenv("UNBELIEVABOAT_GUILD_ID", "your-api-token-here")
 # ========= Tunables =========
 START_HP = 100
 ROUND_DELAY = 1.0              # seconds between narration lines
@@ -176,7 +175,7 @@ class DuelRoyale(commands.Cog):
 
         followup = interaction.followup
         if bet_amount > 0:
-            check_sufficient_balance = await self.check_sufficient_balance([p1.id, p2.id], bet_amount, followup)
+            check_sufficient_balance = await self.check_sufficient_balance(interaction.guild_id, [p1.id, p2.id], bet_amount, followup)
             if not check_sufficient_balance[0]:
                 await followup.send(f"❌ Duel cancelled due to insufficient balance(s).")
                 return
@@ -261,17 +260,18 @@ class DuelRoyale(commands.Cog):
             
             # Transfer balance using reusable function
             if bet_amount > 0:  
-                await self.transfer_balance(winner_id, loser_id, bet_amount, followup)
+                await self.transfer_balance(interaction.guild_id, winner_id, loser_id, bet_amount, followup)
         finally:
             self.active_players.discard(p1.id)
             self.active_players.discard(p2.id)
 
-    async def check_sufficient_balance(self, user_ids: list[int], bet_amount: int, 
+    async def check_sufficient_balance(self, guild_id: int, user_ids: list[int], bet_amount: int, 
                                      followup: discord.Webhook = None, silent: bool = False) -> tuple[bool, dict[int, int]]:
         """
         Check if all users have sufficient balance for the bet amount.
         
         Args:
+            guild_id: Discord guild ID
             user_ids: List of Discord user IDs to check
             bet_amount: Required bet amount
             followup: Optional webhook for error messages
@@ -289,7 +289,7 @@ class DuelRoyale(commands.Cog):
             
             # Check each user's balance
             for user_id in user_ids:
-                user = await self.unb_client.get_user_balance(GUILD_ID, user_id)
+                user = await self.unb_client.get_user_balance(guild_id, user_id)
                 balances[user_id] = user.cash
                 
                 if user.cash < bet_amount:
@@ -312,12 +312,13 @@ class DuelRoyale(commands.Cog):
                 await followup.send(f"❌ {error_msg}")
             return False, {}
 
-    async def transfer_balance(self, winner_id: int, loser_id: int, bet_amount: int, 
+    async def transfer_balance(self, guild_id: int, winner_id: int, loser_id: int, bet_amount: int, 
                              followup: discord.Webhook = None, silent: bool = False) -> bool:
         """
         Transfer balance between two users after a duel.
         
         Args:
+            guild_id: Discord guild ID
             winner_id: Discord user ID of the winner
             loser_id: Discord user ID of the loser  
             bet_amount: Amount to transfer
@@ -335,8 +336,8 @@ class DuelRoyale(commands.Cog):
                 await followup.send(f"Initiating Cash transfer from <@{loser_id}> to <@{winner_id}> in the amount of {bet_amount}")
             
             # Update balances: subtract from loser, add to winner
-            await self.unb_client.update_user_balance(GUILD_ID, loser_id, cash=-bet_amount, reason="Duel loss")
-            await self.unb_client.update_user_balance(GUILD_ID, winner_id, cash=bet_amount, reason="Duel win")
+            await self.unb_client.update_user_balance(guild_id, loser_id, cash=-bet_amount, reason="Duel loss")
+            await self.unb_client.update_user_balance(guild_id, winner_id, cash=bet_amount, reason="Duel win")
             
             if not silent and followup:
                 await followup.send(f"Cash transfer complete")
