@@ -8,6 +8,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+# OPTIONAL: only needed if you still use Google Sheets commands elsewhere.
+# Safe to keep; remove if you don't use them.
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -15,31 +17,15 @@ from google.oauth2.service_account import Credentials
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-
-SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")            # the /d/<THIS>/edit ID
-WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")  # your tab name
-SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
-SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")    # optional alternative
-
-# Optional Engauge vars (used by the horse_race_engauge cog)
-ENGAUGE_TOKEN = os.getenv("ENGAUGE_TOKEN")
-ENGAUGE_SERVER_ID = os.getenv("ENGAUGE_SERVER_ID")
-# ENGAUGE_API_BASE, CURRENCY_EMOJI, RACE_LOG_CHANNEL_ID, TRANSACTION_LOG_PATH are optional
-
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
-# ================= Discord bot =================
-intents = discord.Intents.default()
-# If you want /wallet balance to show display names reliably across joins, keep members True
-intents.members = True
+# ---- If you still use Sheets; otherwise you can delete this whole block ----
+SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
+WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")
+SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
+SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")
 
-bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for slash
-tree = bot.tree
-
-write_lock = asyncio.Lock()
-
-# ================= Google Sheets helpers =================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -71,30 +57,28 @@ def safe_append_row(values: list[str | int | float], worksheet_name: str | None 
 def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None = None):
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
+# ---------------------------------------------------------------------------
 
-# ================= Startup & sync =================
+# ================= Discord bot =================
+intents = discord.Intents.default()
+intents.members = True  # helpful for display names
+bot = commands.Bot(command_prefix="!", intents=intents)
+tree = bot.tree
+write_lock = asyncio.Lock()
+
 @bot.event
 async def setup_hook():
-    # Load your existing cogs before first sync
-    try:
-        await bot.load_extension("duel_royale")
-        print("Loaded duel_royale cog ✅")
-    except Exception as e:
-        print(f"Failed loading duel_royale: {e}")
+    # Load your other cogs if you have them
+    for ext in ("duel_royale", "fun"):
+        try:
+            await bot.load_extension(ext)
+            print(f"Loaded {ext} cog ✅")
+        except Exception as e:
+            print(f"Failed loading {ext}: {e}")
 
+    # Load the horse race cog
     try:
-        await bot.load_extension("fun")  # /rat lives here
-        print("Loaded fun cog ✅")
-    except Exception as e:
-        print(f"Failed loading fun: {e}")
-
-    # --- NEW: Load the Engauge horse race cog ---
-    try:
-        # Optional sanity check to warn if Engauge vars are missing
-        if not ENGAUGE_TOKEN or not ENGAUGE_SERVER_ID:
-            print("⚠️  ENGAUGE_TOKEN or ENGAUGE_SERVER_ID not set. "
-                  "horse_race_engauge will try to init and may raise.")
-        await bot.load_extension("horse_race_engauge")  # file: horse_race_engauge.py
+        await bot.load_extension("horse_race_engauge")
         print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
@@ -102,15 +86,12 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     try:
-        print("Registered commands in code:", [c.name for c in tree.get_commands()])
-
-        # Per-guild sync (instant in each server)
+        # Per-guild sync (immediate in those servers)
         for g in bot.guilds:
-            gobj = discord.Object(id=g.id)
-            synced = await tree.sync(guild=gobj)
+            synced = await tree.sync(guild=discord.Object(id=g.id))
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
 
-        # Global sync (can take time to propagate)
+        # Global sync (slow to propagate; fine to keep)
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
 
@@ -122,8 +103,10 @@ async def on_ready():
 @app_commands.default_permissions(administrator=True)
 @tree.command(name="sync_commands", description="Force-resync slash commands to THIS server (admin only).")
 async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
+    # Avoid 10062 by deferring once, quickly, and using followups
     try:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         gobj = discord.Object(id=interaction.guild_id)
         synced = await tree.sync(guild=gobj)
         await interaction.followup.send(
@@ -131,78 +114,19 @@ async def sync_commands(interaction: discord.Interaction):
             ephemeral=True
         )
     except Exception as e:
-        await interaction.followup.send(f"Sync failed: `{e}`", ephemeral=True)
+        try:
+            await interaction.followup.send(f"Sync failed: `{e}`", ephemeral=True)
+        except Exception:
+            pass
+        print("sync_commands error:", e)
 
-# ================= Bot health =================
-@tree.command(name="status", description="Check bot → Google Sheets connectivity.")
-async def status(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    try:
-        _, _, ws = open_sheet()
-        await interaction.followup.send(
-            f"✅ Connected to **{ws.spreadsheet.title}** / **{ws.title}**.",
-            ephemeral=True
-        )
-    except Exception as e:
-        await interaction.followup.send(f"❌ Sheets error: `{e}`", ephemeral=True)
-
+# ---- (Optional) simple bot health command ----
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
-# ================= Sheets commands =================
-@tree.command(name="append", description="Append a row: date, user, category.")
-@app_commands.describe(username="Name to log", category="Category to log", worksheet="Optional worksheet/tab")
-async def append(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
-    await interaction.response.defer(ephemeral=True)
-    date_str = datetime.now().strftime("%m/%d/%Y")
-    values = [date_str, username, category]
-    async with write_lock:
-        try:
-            await asyncio.to_thread(safe_append_row, values, worksheet)
-            await interaction.followup.send(f"📝 Logged **{username}** → **{category}**.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ Append failed: `{e}`", ephemeral=True)
-
-@tree.command(name="loguser", description="(Admins) Log a user to a category you pick.")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(username="User to log", category="Category", worksheet="Optional worksheet/tab")
-async def loguser(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
-    await interaction.response.defer(ephemeral=True)
-    date_str = datetime.now().strftime("%m/%d/%Y")
-    values = [date_str, username, category]
-    async with write_lock:
-        try:
-            await asyncio.to_thread(safe_append_row, values, worksheet)
-            await interaction.followup.send(f"✅ Logged **{username}** → **{category}**.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
-
-@tree.command(name="loguser_text", description="(Admins) Log a category for a name you type.")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(username="Name to record (free text)", category="Category to log", worksheet="Optional worksheet/tab")
-async def loguser_text(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
-    await interaction.response.defer(ephemeral=True)
-    date_str = datetime.now().strftime("%m/%d/%Y")
-    values = [date_str, username, category]
-    async with write_lock:
-        try:
-            await asyncio.to_thread(safe_append_row, values, worksheet)
-            await interaction.followup.send(f"🗂️ Logged **{username}** → **{category}**.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
-
-@tree.command(name="setcell", description="Set a single cell (A1) to a value.")
-@app_commands.describe(a1="Cell (e.g., B2)", value="Value to write", worksheet="Optional worksheet/tab")
-async def setcell(interaction: discord.Interaction, a1: str, value: str, worksheet: str | None = None):
-    await interaction.response.defer(ephemeral=True)
-    async with write_lock:
-        try:
-            await asyncio.to_thread(safe_set_cell, a1, value, worksheet)
-            await interaction.followup.send(f"✅ Set **{a1}** → `{value}`.", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
-
+# (Keep/remove your Sheets commands as you like)
 # ================= Run =================
 if __name__ == "__main__":
+    # Recommended start command on Railway: python -u bot.py
     bot.run(DISCORD_BOT_TOKEN)
