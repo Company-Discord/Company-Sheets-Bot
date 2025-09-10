@@ -67,7 +67,7 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
 
-# ================= Startup & sync =================
+# ================= Startup & sync ==================
 @bot.event
 async def setup_hook():
     try:
