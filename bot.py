@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# ====== Google Sheets (optional; keep if you use these commands) ======
+# ====== Google Sheets (optional; keep if you use these commands) =======
 import gspread
 from google.oauth2.service_account import Credentials
 
