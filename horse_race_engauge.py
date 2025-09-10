@@ -14,7 +14,6 @@ from discord.ext import commands
 
 # ===================== Utility: currency formatting =========================
 def get_currency_emoji() -> str:
-    # Accept: unicode (💰), <:name:id>, or simple :TC:
     raw = os.getenv("CURRENCY_EMOJI", "").strip()
     return raw if raw else "💰"
 
@@ -23,9 +22,6 @@ def fmt_amt(n: int) -> str:
 
 # ===================== Transaction Logger ===================================
 class TransactionLogger:
-    """
-    Appends JSON lines to a local file and (optionally) mirrors to a Discord channel.
-    """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.path = os.getenv("TRANSACTION_LOG_PATH", "transactions.jsonl")
@@ -46,15 +42,12 @@ class TransactionLogger:
         except Exception:
             pass
 
-        # Mirror to channel (best-effort, non-blocking)
         if self.log_channel_id:
             try:
-                ch = self.bot.get_channel(self.log_channel_id)
-                if ch is None and isinstance(self.bot, commands.Bot):
-                    ch = await self.bot.fetch_channel(self.log_channel_id)
+                ch = self.bot.get_channel(self.log_channel_id) or await self.bot.fetch_channel(self.log_channel_id)
                 if isinstance(ch, discord.TextChannel):
-                    nice = self._pretty_embed(kind, event)
-                    await ch.send(embed=nice)
+                    em = self._pretty_embed(kind, event)
+                    await ch.send(embed=em)
             except Exception:
                 pass
 
@@ -81,12 +74,6 @@ class TransactionLogger:
 
 # ===================== Engauge Wallet Provider ==============================
 class EngaugeWallet:
-    """
-    REST calls to Engauge. Uses:
-      GET  /api/v1/servers/{serverId}/members/{memberId}
-      POST /api/v1/servers/{serverId}/members/{memberId}/currency?amount=...
-      PATCH /api/v1/servers/{serverId}/members/{memberId}  (JSON Patch replace /currency)
-    """
     def __init__(self):
         self.token = os.getenv("ENGAUGE_TOKEN", "").strip()
         self.server_id = os.getenv("ENGAUGE_SERVER_ID", "").strip()
@@ -306,10 +293,28 @@ class HorseRaceEngauge(commands.Cog):
         self.tx = TransactionLogger(bot)
 
     # ---------- Helpers ----------
+    def _project_odds_lines(self, race: RaceState) -> List[str]:
+        """Return lines like: 'Comet — pays 💰 180 per 💰 100 (pool: 💰 900)'."""
+        pot = race.total_pool()
+        if pot <= 0:
+            return []
+        rake = math.floor(pot * race.rake_bps / 10000)
+        prize_pool = pot - rake
+        lines = []
+        for i, name in enumerate(race.horses):
+            hp = race.horse_pool(i)
+            if hp > 0 and prize_pool > 0:
+                # payout per 100 wagered on this horse if it wins
+                per100 = math.floor(prize_pool * 100 / hp)
+                lines.append(f"**{name}** — pays {fmt_amt(per100)} per {fmt_amt(100)} (pool: {fmt_amt(hp)})")
+            else:
+                lines.append(f"**{name}** — no bets yet")
+        return lines
+
     def make_lobby_embed(self, race: RaceState) -> discord.Embed:
         e = discord.Embed(
             title="🏁 Horse Race — Place Your Bets!",
-            description="Pick a horse from the dropdown and enter your bet amount.",
+            description="Pick a horse from the dropdown or use `/bet horse:<name> amount:<n>`.",
             color=discord.Color.gold(),
         )
         e.add_field(
@@ -323,24 +328,22 @@ class HorseRaceEngauge(commands.Cog):
             inline=True,
         )
 
+        # By Horse totals
         if race.bets:
             by_horse = []
             for i, name in enumerate(race.horses):
                 hp = race.horse_pool(i)
                 if hp > 0:
-                    by_horse.append(f"**{i+1}. {name}** — {fmt_amt(hp)}")
+                    by_horse.append(f"**{name}** — {fmt_amt(hp)}")
             if by_horse:
                 e.add_field(name="By Horse", value="\n".join(by_horse), inline=False)
 
-            bettors: Dict[int, int] = {}
-            for b in race.bets:
-                bettors[b.user_id] = bettors.get(b.user_id, 0) + b.amount
-            user_list = "\n".join([f"<@{uid}> — {fmt_amt(amt)}" for uid, amt in sorted(bettors.items(), key=lambda x: -x[1])])
-            e.add_field(name="Bettors", value=user_list[:1024] or "—", inline=False)
-        else:
-            e.add_field(name="Bets", value="No bets yet.", inline=False)
+        # Live projected odds / payouts
+        odds = self._project_odds_lines(race)
+        if odds:
+            e.add_field(name="Current Odds (projected payouts)", value="\n".join(odds)[:1024], inline=False)
 
-        e.set_footer(text=f"Min bet: {fmt_amt(race.min_bet)} | Max bet: {fmt_amt(race.max_bet) if race.max_bet else '∞'}")
+        e.set_footer(text=f"Min: {fmt_amt(race.min_bet)} | Max: {fmt_amt(race.max_bet) if race.max_bet else '∞'}")
         return e
 
     def render_track(self, race: RaceState) -> str:
@@ -421,6 +424,99 @@ class HorseRaceEngauge(commands.Cog):
             except Exception:
                 pass
             await self.start_race(interaction)
+
+    # ---- New: /bet command to bet by horse NAME with autocomplete ----
+    @app_commands.command(name="bet", description="Place a bet by horse NAME for the current race.")
+    @app_commands.describe(horse="Horse name (autocomplete)", amount="Bet amount")
+    async def bet_cmd(self, interaction: discord.Interaction, horse: str, amount: int):
+        channel_id = interaction.channel_id
+        race = self.active_races.get(channel_id)
+
+        if not race or race.ended or not race.open_for_bets:
+            return await interaction.response.send_message("No active betting lobby in this channel.", ephemeral=True)
+
+        if amount < race.min_bet:
+            return await interaction.response.send_message(f"Minimum bet is {fmt_amt(race.min_bet)}.", ephemeral=True)
+        if race.max_bet and amount > race.max_bet:
+            return await interaction.response.send_message(f"Maximum bet is {fmt_amt(race.max_bet)}.", ephemeral=True)
+
+        # find horse index by case-insensitive name (allow partial, prefer exact)
+        names = race.horses
+        target = horse.strip().lower()
+        idx = None
+        for i, n in enumerate(names):
+            if n.lower() == target:
+                idx = i
+                break
+        if idx is None:
+            matches = [i for i, n in enumerate(names) if target in n.lower()]
+            if matches:
+                idx = matches[0]
+
+        if idx is None:
+            return await interaction.response.send_message(
+                f"Couldn't find a horse named **{horse}**. Options: {', '.join(names)}", ephemeral=True
+            )
+
+        # Try debit then record bet
+        try:
+            bal_after = await self.wallet.debit(interaction.user.id, amount)
+        except Exception as e:
+            return await interaction.response.send_message(f"Couldn't place bet: {e}", ephemeral=True)
+
+        bet = Bet(
+            user_id=interaction.user.id,
+            username=interaction.user.display_name,
+            horse=idx,
+            amount=amount,
+        )
+        race.add_bet(bet)
+
+        await self.tx.log(
+            guild_id=interaction.guild_id or 0,
+            channel_id=interaction.channel_id or 0,
+            kind="bet_placed",
+            payload={
+                "user_id": str(interaction.user.id),
+                "username": bet.username,
+                "horse_idx": bet.horse,
+                "horse_name": race.horses[bet.horse],
+                "amount": amount,
+                "balance_after": bal_after,
+            },
+        )
+
+        # Update lobby to refresh odds
+        try:
+            if race.lobby_message:
+                await race.lobby_message.edit(embed=self.make_lobby_embed(race), view=self.make_lobby_view(race))
+        except Exception:
+            pass
+
+        await interaction.response.send_message(
+            f"Bet placed: **{fmt_amt(amount)}** on **{race.horses[idx]}**. Good luck!", ephemeral=True
+        )
+
+    @bet_cmd.autocomplete("horse")
+    async def bet_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+        race = self.active_races.get(interaction.channel_id or 0)
+        if not race:
+            return []
+        current = (current or "").lower()
+        options = race.horses
+        # rank: exact prefix, substring, then the rest; limit 25 for Discord
+        scored = []
+        for name in options:
+            nlow = name.lower()
+            if current and nlow.startswith(current):
+                score = 0
+            elif current and current in nlow:
+                score = 1
+            else:
+                score = 2
+            scored.append((score, name))
+        scored.sort()
+        return [app_commands.Choice(name=n, value=n) for _, n in scored[:25]]
 
     wallet = app_commands.Group(name="wallet", description="Engauge wallet")
 
@@ -512,7 +608,6 @@ class HorseRaceEngauge(commands.Cog):
             winners = [b for b in race.bets if b.horse == winning_horse]
             win_pool = sum(b.amount for b in winners)
 
-            # log summary of all bets
             bet_summaries = [f"<@{b.user_id}> {fmt_amt(b.amount)} on {race.horses[b.horse]}" for b in race.bets]
 
             if win_pool > 0 and prize_pool > 0:
