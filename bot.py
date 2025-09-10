@@ -82,50 +82,66 @@ async def setup_hook():
         print(f"Failed loading fun: {e}")
 
     try:
-        await bot.load_extension("horse_race_engauge")     # or: "cogs.horse_race_engauge"
-        print("Loaded horse_race_engauge cog ✅")
+        if(os.getenv("IS_DEV") != "True"):
+            await bot.load_extension("horse_race_engauge")     # or: "cogs.horse_race_engauge"
+            print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
 
 @bot.event
 async def on_ready():
     try:
-        # ---- Per-guild sync ONLY (stable IDs, instant in each server) ----
+        # ---- Global sync first ----
+        global_synced = await tree.sync()
+        print(f"Global sync → {len(global_synced)} commands")
+        
+        # ---- Per-guild sync (stable IDs, instant in each server) ----
         for g in bot.guilds:
             gobj = discord.Object(id=g.id)
+            tree.copy_global_to(guild=gobj)
             synced = await tree.sync(guild=gobj)
             print(f"Per-guild sync → {len(synced)} commands to {g.name} ({g.id})")
 
-        # (No global sync here to avoid ID churn)
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
 
 
 # ================= Admin sync helpers =================
-@app_commands.default_permissions(administrator=True)
-@tree.command(name="sync_here", description="Copy global commands to THIS server and sync them (admin only).")
-async def sync_here(interaction: discord.Interaction):
-    await interaction.response.send_message("Syncing commands here…", ephemeral=True)
-    try:
-        g = discord.Object(id=interaction.guild_id)
-        tree.copy_global_to(guild=g)
-        synced = await tree.sync(guild=g)
-        await interaction.followup.send(f"✅ Synced {len(synced)} commands to this server.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"❌ {e}", ephemeral=True)
 
 @app_commands.default_permissions(administrator=True)
-@tree.command(name="sync_commands", description="Force-resync slash commands to THIS server (admin only).")
+@tree.command(name="sync_commands", description="Force-resync slash commands to ALL servers (admin only).")
 async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.send_message("Syncing…", ephemeral=True)
+    await interaction.response.send_message("Syncing commands to all servers…", ephemeral=True)
     try:
-        gobj = discord.Object(id=interaction.guild_id)
-        synced = await tree.sync(guild=gobj)
-        await interaction.followup.send(
-            f"✅ Synced **{len(synced)}** commands to **{interaction.guild.name}** ({interaction.guild_id}).",
-            ephemeral=True
-        )
+        total_synced = 0
+        server_count = 0
+        sync_results = []
+        
+        for guild in bot.guilds:
+            try:
+                gobj = discord.Object(id=guild.id)
+                tree.copy_global_to(guild=gobj)
+                synced = await tree.sync(guild=gobj)
+                total_synced += len(synced)
+                server_count += 1
+                sync_results.append(f"✅ {guild.name}: {len(synced)} commands")
+            except Exception as guild_error:
+                sync_results.append(f"❌ {guild.name}: {guild_error}")
+                print(f"sync_commands error for {guild.name}: {guild_error}")
+        
+        # Prepare response message
+        summary = f"✅ Synced **{total_synced}** total commands across **{server_count}** servers."
+        
+        # If there are few servers, show details; otherwise just show summary
+        if len(bot.guilds) <= 5:
+            details = "\n".join(sync_results)
+            response = f"{summary}\n\n**Details:**\n{details}"
+        else:
+            response = summary
+            
+        await interaction.followup.send(response, ephemeral=True)
+        
     except Exception as e:
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
         print("sync_commands error:", e)
