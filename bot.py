@@ -1,4 +1,3 @@
-# bot.py
 import os
 import json
 import asyncio
@@ -22,12 +21,18 @@ WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")  # your tab name
 SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
 SA_JSON_PATH = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_PATH")    # optional alternative
 
+# Optional Engauge vars (used by the horse_race_engauge cog)
+ENGAUGE_TOKEN = os.getenv("ENGAUGE_TOKEN")
+ENGAUGE_SERVER_ID = os.getenv("ENGAUGE_SERVER_ID")
+# ENGAUGE_API_BASE, CURRENCY_EMOJI, RACE_LOG_CHANNEL_ID, TRANSACTION_LOG_PATH are optional
+
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
 # ================= Discord bot =================
 intents = discord.Intents.default()
-intents.members = True  # optional; helps with display names
+# If you want /wallet balance to show display names reliably across joins, keep members True
+intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for slash
 tree = bot.tree
@@ -70,17 +75,29 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 # ================= Startup & sync =================
 @bot.event
 async def setup_hook():
-    # Load cogs before the first sync
+    # Load your existing cogs before first sync
     try:
         await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
+
     try:
         await bot.load_extension("fun")  # /rat lives here
         print("Loaded fun cog ✅")
     except Exception as e:
         print(f"Failed loading fun: {e}")
+
+    # --- NEW: Load the Engauge horse race cog ---
+    try:
+        # Optional sanity check to warn if Engauge vars are missing
+        if not ENGAUGE_TOKEN or not ENGAUGE_SERVER_ID:
+            print("⚠️  ENGAUGE_TOKEN or ENGAUGE_SERVER_ID not set. "
+                  "horse_race_engauge will try to init and may raise.")
+        await bot.load_extension("horse_race_engauge")  # file: horse_race_engauge.py
+        print("Loaded horse_race_engauge cog ✅")
+    except Exception as e:
+        print(f"Failed loading horse_race_engauge: {e}")
 
 @bot.event
 async def on_ready():
@@ -93,7 +110,7 @@ async def on_ready():
             synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
 
-        # Global sync (may take a few minutes to propagate)
+        # Global sync (can take time to propagate)
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
 
