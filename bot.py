@@ -70,13 +70,16 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 # ================= Startup & sync =================
 @bot.event
 async def setup_hook():
-    # Load cogs before the first sync
     try:
         await bot.load_extension("duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
-
+    try:
+        await bot.load_extension("fun")  # <--- add this
+        print("Loaded fun cog ✅")
+    except Exception as e:
+        print(f"Failed loading fun: {e}")
 @bot.event
 async def on_ready():
     try:
