@@ -75,9 +75,9 @@ async def setup_hook():
         except Exception as e:
             print(f"Failed loading {ext}: {e}")
 
-    # Horse race cog
+    # Load the horse race cog
     try:
-        await bot.load_extension("horse_race_engauge")
+        await bot.load_extension("horse_race_engauge")   
         print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
