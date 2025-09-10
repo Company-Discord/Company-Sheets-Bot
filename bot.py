@@ -8,8 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-# OPTIONAL: only needed if you still use Google Sheets commands elsewhere.
-# Safe to keep; remove if you don't use them.
+# If you still use Sheets, keep these; otherwise safe to remove
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -20,7 +19,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
-# ---- If you still use Sheets; otherwise you can delete this whole block ----
+# ---- Google Sheets (optional; keep if you still use those commands) ----
 SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
 WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")
 SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
@@ -57,18 +56,18 @@ def safe_append_row(values: list[str | int | float], worksheet_name: str | None 
 def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None = None):
     _, _, ws = open_sheet(worksheet_name)
     ws.update_acell(a1, value)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------
 
 # ================= Discord bot =================
 intents = discord.Intents.default()
-intents.members = True  # helpful for display names
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 write_lock = asyncio.Lock()
 
 @bot.event
 async def setup_hook():
-    # Load your other cogs if you have them
+    # Load any other cogs you have
     for ext in ("duel_royale", "fun"):
         try:
             await bot.load_extension(ext)
@@ -76,7 +75,7 @@ async def setup_hook():
         except Exception as e:
             print(f"Failed loading {ext}: {e}")
 
-    # Load the horse race cog
+    # Horse race cog
     try:
         await bot.load_extension("horse_race_engauge")
         print("Loaded horse_race_engauge cog ✅")
@@ -86,15 +85,11 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     try:
-        # Per-guild sync (immediate in those servers)
         for g in bot.guilds:
             synced = await tree.sync(guild=discord.Object(id=g.id))
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
-
-        # Global sync (slow to propagate; fine to keep)
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
-
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
@@ -103,30 +98,26 @@ async def on_ready():
 @app_commands.default_permissions(administrator=True)
 @tree.command(name="sync_commands", description="Force-resync slash commands to THIS server (admin only).")
 async def sync_commands(interaction: discord.Interaction):
-    # Avoid 10062 by deferring once, quickly, and using followups
+    # ACK first to avoid 10062 Unknown interaction
+    await interaction.response.send_message("Syncing…", ephemeral=True)
     try:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=True)
         gobj = discord.Object(id=interaction.guild_id)
         synced = await tree.sync(guild=gobj)
         await interaction.followup.send(
-            f"Synced **{len(synced)}** commands to **{interaction.guild.name}** ({interaction.guild_id}).",
+            f"✅ Synced **{len(synced)}** commands to **{interaction.guild.name}** ({interaction.guild_id}).",
             ephemeral=True
         )
     except Exception as e:
-        try:
-            await interaction.followup.send(f"Sync failed: `{e}`", ephemeral=True)
-        except Exception:
-            pass
+        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
         print("sync_commands error:", e)
 
-# ---- (Optional) simple bot health command ----
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
-# (Keep/remove your Sheets commands as you like)
+# (Keep your Sheets slash commands here if you use them)
+
 # ================= Run =================
 if __name__ == "__main__":
-    # Recommended start command on Railway: python -u bot.py
+    # Railway start: python -u bot.py
     bot.run(DISCORD_BOT_TOKEN)
