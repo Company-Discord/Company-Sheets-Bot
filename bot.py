@@ -48,8 +48,8 @@ def make_gspread_client() -> gspread.Client:
         creds = Credentials.from_service_account_file(SA_JSON_PATH, scopes=SCOPES)
     else:
         raise RuntimeError(
-            "Missing Google service account credentials. Set GOOGLE_SERVICE_ACCOUNT_JSON_INLINE "
-            "or GOOGLE_SERVICE_ACCOUNT_JSON_PATH."
+            "Missing Google service account credentials. "
+            "Set GOOGLE_SERVICE_ACCOUNT_JSON_INLINE or GOOGLE_SERVICE_ACCOUNT_JSON_PATH."
         )
     return gspread.authorize(creds)
 
@@ -93,7 +93,7 @@ async def on_ready():
             synced = await tree.sync(guild=gobj)
             print(f"Synced {len(synced)} commands to guild {g.name} ({g.id})")
 
-        # Global sync (rolls out everywhere; may take a bit)
+        # Global sync (may take a few minutes to propagate)
         synced_global = await tree.sync()
         print(f"Synced {len(synced_global)} commands globally")
 
