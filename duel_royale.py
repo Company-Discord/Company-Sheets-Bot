@@ -1,12 +1,18 @@
 # duel_royale.py
 # Requires: discord.py >= 2.0
 import asyncio
+import os
 import random
 import time
 import discord
 from discord.ext import commands
 from discord import app_commands
+from unbelievaboat_api import Client, quick_get_balance, quick_get_leaderboard
+from dotenv import load_dotenv
 
+load_dotenv()
+API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN", "your-api-token-here")
+GUILD_ID = os.getenv("UNBELIEVABOAT_GUILD_ID", "your-api-token-here")
 # ========= Tunables =========
 START_HP = 100
 ROUND_DELAY = 1.0              # seconds between narration lines
@@ -150,15 +156,35 @@ class DuelRoyale(commands.Cog):
         self.active_players: set[int] = set()
         # Pending /duelbet: target_id -> {'challenger': int, 'message_id': int, 'expires': float}
         self.pending_bets: dict[int, dict] = {}
+        # Initialize UnbelievaBoat client
+        self.unb_client: Client = None
+        
+    async def cog_load(self):
+        """Initialize the UnbelievaBoat client when cog loads."""
+        self.unb_client = Client(API_TOKEN)
+        print("✅ UnbelievaBoat client initialized")
+        
+    async def cog_unload(self):
+        """Clean up the UnbelievaBoat client when cog unloads."""
+        if self.unb_client:
+            await self.unb_client.close()
+            print("🔧 UnbelievaBoat client closed")
 
     # ----- core fight runner -----
-    async def _run_duel(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member):
+    async def _run_duel(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member, bet_amount: int = 0):
+
+
         followup = interaction.followup
+        if bet_amount > 0:
+            check_sufficient_balance = await self.check_sufficient_balance([p1.id, p2.id], bet_amount, followup)
+            if not check_sufficient_balance[0]:
+                await followup.send(f"❌ Duel cancelled due to insufficient balance(s).")
+                return
         names = {p1.id: p1.display_name, p2.id: p2.display_name}
         hp = {p1.id: START_HP, p2.id: START_HP}
         next_multiplier = {}
 
-        await followup.send(f"⚔️ **Duel begins!** {names[p1.id]} vs {names[p2.id]}")
+        await followup.send(f"⚔️ **Duel begins!** {names[p1.id]} vs {names[p2.id]} for ${bet_amount}")
         await followup.send(f"Both fighters start at {START_HP} HP.")
 
         bot_id = self.bot.user.id
@@ -230,10 +256,99 @@ class DuelRoyale(commands.Cog):
                 round_no += 1
 
             winner_id = attacker if hp[attacker] > 0 else defender
+            loser_id = defender if hp[defender] <= 0 else attacker
             await followup.send(f"🏆 **{names[winner_id]}** wins the duel!")
+            
+            # Transfer balance using reusable function
+            if bet_amount > 0:  
+                await self.transfer_balance(winner_id, loser_id, bet_amount, followup)
         finally:
             self.active_players.discard(p1.id)
             self.active_players.discard(p2.id)
+
+    async def check_sufficient_balance(self, user_ids: list[int], bet_amount: int, 
+                                     followup: discord.Webhook = None, silent: bool = False) -> tuple[bool, dict[int, int]]:
+        """
+        Check if all users have sufficient balance for the bet amount.
+        
+        Args:
+            user_ids: List of Discord user IDs to check
+            bet_amount: Required bet amount
+            followup: Optional webhook for error messages
+            silent: If True, don't send error messages
+            
+        Returns:
+            tuple: (all_sufficient: bool, balances: dict[user_id: cash_amount])
+        """
+        try:
+            if not self.unb_client:
+                raise Exception("UnbelievaBoat client not initialized")
+            
+            balances = {}
+            insufficient_users = []
+            
+            # Check each user's balance
+            for user_id in user_ids:
+                user = await self.unb_client.get_user_balance(GUILD_ID, user_id)
+                balances[user_id] = user.cash
+                
+                if user.cash < bet_amount:
+                    insufficient_users.append(user_id)
+            
+            # Report insufficient funds if any
+            if insufficient_users and not silent and followup:
+                insufficient_mentions = [f"<@{uid}>" for uid in insufficient_users]
+                await followup.send(
+                    f"❌ Insufficient funds! {', '.join(insufficient_mentions)} need at least ${bet_amount} cash. "
+                    f"Current balances: {', '.join([f'<@{uid}>: ${balances[uid]}' for uid in insufficient_users])}"
+                )
+            
+            return len(insufficient_users) == 0, balances
+                
+        except Exception as e:
+            error_msg = f"Error checking balances: {e}"
+            print(error_msg)
+            if not silent and followup:
+                await followup.send(f"❌ {error_msg}")
+            return False, {}
+
+    async def transfer_balance(self, winner_id: int, loser_id: int, bet_amount: int, 
+                             followup: discord.Webhook = None, silent: bool = False) -> bool:
+        """
+        Transfer balance between two users after a duel.
+        
+        Args:
+            winner_id: Discord user ID of the winner
+            loser_id: Discord user ID of the loser  
+            bet_amount: Amount to transfer
+            followup: Optional webhook for status messages
+            silent: If True, don't send status messages
+            
+        Returns:
+            bool: True if transfer successful, False otherwise
+        """
+        try:
+            if not self.unb_client:
+                raise Exception("UnbelievaBoat client not initialized")
+                
+            if not silent and followup:
+                await followup.send(f"Initiating Cash transfer from <@{loser_id}> to <@{winner_id}> in the amount of {bet_amount}")
+            
+            # Update balances: subtract from loser, add to winner
+            await self.unb_client.update_user_balance(GUILD_ID, loser_id, cash=-bet_amount, reason="Duel loss")
+            await self.unb_client.update_user_balance(GUILD_ID, winner_id, cash=bet_amount, reason="Duel win")
+            
+            if not silent and followup:
+                await followup.send(f"Cash transfer complete")
+            
+            return True
+                
+        except Exception as e:
+            error_msg = f"Error transferring balance: {e}"
+            print(error_msg)
+            if not silent and followup:
+                await followup.send(f"❌ {error_msg}")
+            return False
 
     async def narrate(self, followup: discord.Webhook, lines: list[str]):
         for line in lines:
@@ -245,8 +360,10 @@ class DuelRoyale(commands.Cog):
     @app_commands.describe(opponent="Who do you want to duel?")
     async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
         author = interaction.user
+        bet_amount = 0  # Default to no bet for instant duels
+ 
         if opponent.id == author.id:
-            return await interaction.response.send_message("You can’t duel yourself.", ephemeral=True)
+            return await interaction.response.send_message("You can't duel yourself.", ephemeral=True)
         if opponent.bot and opponent.id != self.bot.user.id:
             return await interaction.response.send_message("You can’t duel that bot.", ephemeral=True)
 
@@ -257,16 +374,16 @@ class DuelRoyale(commands.Cog):
             return await interaction.response.send_message("Someone has a pending /duelbet.", ephemeral=True)
 
         await interaction.response.defer(thinking=False)
-        await self._run_duel(interaction, author, opponent)
+        await self._run_duel(interaction, author, opponent, bet_amount)
 
     # ----- Button-based /duelbet (requires accept/decline) -----
     class BetView(discord.ui.View):
-        def __init__(self, cog: "DuelRoyale", challenger_id: int, target_id: int, note: str | None):
+        def __init__(self, cog: "DuelRoyale", challenger_id: int, target_id: int, bet_amount: int):
             super().__init__(timeout=DUELBET_TIMEOUT)
             self.cog = cog
             self.challenger_id = challenger_id
             self.target_id = target_id
-            self.note = note
+            self.bet_amount = bet_amount
 
         async def interaction_check(self, itx: discord.Interaction) -> bool:
             # Only the target can press buttons
@@ -287,7 +404,7 @@ class DuelRoyale(commands.Cog):
             challenger = itx.guild.get_member(self.challenger_id)
             target = itx.guild.get_member(self.target_id)
             fake_interaction = itx  # reuse followup pipe
-            await self.cog._run_duel(fake_interaction, challenger, target)
+            await self.cog._run_duel(fake_interaction, challenger, target, self.bet_amount)
 
         @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
         async def decline(self, itx: discord.Interaction, button: discord.ui.Button):
@@ -305,9 +422,11 @@ class DuelRoyale(commands.Cog):
                 pass
 
     @app_commands.command(name="duelbet", description="Challenge someone to a duel that requires their acceptance (with buttons).")
-    @app_commands.describe(opponent="Who do you want to challenge?", note="Optional note (e.g., what you're betting)")
-    async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, note: str | None = None):
+    @app_commands.describe(opponent="Who do you want to challenge? (user)", bet_amount="Amount you are betting (number)")
+    async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, bet_amount: int):
         author = interaction.user
+        if bet_amount <= 0:
+            return await interaction.response.send_message("Bet amount must be greater than 0.", ephemeral=True)
         if opponent.id == author.id:
             return await interaction.response.send_message("You can’t duel yourself.", ephemeral=True)
         if opponent.bot and opponent.id != self.bot.user.id:
@@ -319,10 +438,10 @@ class DuelRoyale(commands.Cog):
         if author.id in self.pending_bets or opponent.id in self.pending_bets:
             return await interaction.response.send_message("Someone already has a pending /duelbet.", ephemeral=True)
 
-        view = DuelRoyale.BetView(self, author.id, opponent.id, note)
+        view = DuelRoyale.BetView(self, author.id, opponent.id, bet_amount)
         msg = f"📨 **{author.mention}** challenged {opponent.mention} to a **bet duel**!"
-        if note:
-            msg += f"  _({note})_"
+        if bet_amount:
+            msg += f"  _({bet_amount})_"
         await interaction.response.send_message(msg, view=view, allowed_mentions=discord.AllowedMentions(users=True))
         # mark pending
         sent = await interaction.original_response()
