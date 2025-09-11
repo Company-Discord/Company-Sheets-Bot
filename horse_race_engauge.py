@@ -212,9 +212,7 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
             "horse_idx": self.horse_idx, "horse_name": self.race.horses[self.horse_idx],
             "amount": amt, "balance_after": bal_after
         })
-        await interaction.response.send_message(
-            f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.", ephemeral=True
-        )
+        await interaction.response.send_message(f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.", ephemeral=True)
         try:
             if self.race.lobby:
                 await self.race.lobby.edit(embed=self.cog.lobby_embed(self.race),
@@ -313,7 +311,6 @@ class HorseRace(commands.Cog):
 
     # ---- Commands ----
     @app_commands.command(name="race", description="Start a horse race betting lobby (Engauge currency).")
-    @app_commands.checks.bot_has_permissions(send_messages=True, embed_links=True)
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
         rake="House rake in basis points (500=5%).",
