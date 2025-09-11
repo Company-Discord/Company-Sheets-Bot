@@ -11,7 +11,9 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+from dotenv import load_dotenv
 
+load_dotenv()
 # ================= Currency =================
 def cur() -> str:
     v = (os.getenv("CURRENCY_EMOJI") or "").strip()
@@ -264,6 +266,7 @@ class HorseRace(commands.Cog):
         # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
+            print(f"[HorseRace] Setting guild-specific commands for {guild_id}")
             guild_obj = discord.Object(id=int(guild_id))
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj

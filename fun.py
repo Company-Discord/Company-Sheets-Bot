@@ -7,7 +7,9 @@ import os
 from discord.ext import commands
 from discord import app_commands
 from tenacity import retry, stop_after_attempt, wait_fixed
+from dotenv import load_dotenv
 
+load_dotenv()
 WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
 UNSPLASH_RANDOM = "https://source.unsplash.com/random/?rat"
 LOREMFLICKR = "https://loremflickr.com/800/600/rat"
@@ -23,6 +25,7 @@ class Fun(commands.Cog):
         # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
+            print(f"[Fun] Setting guild-specific commands for {guild_id}")
             guild_obj = discord.Object(id=int(guild_id))
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj

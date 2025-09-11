@@ -158,6 +158,7 @@ class DuelRoyale(commands.Cog):
         # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
         if guild_id:
+            print(f"[DuelRoyale] Setting guild-specific commands for {guild_id}")
             guild_obj = discord.Object(id=int(guild_id))
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj
