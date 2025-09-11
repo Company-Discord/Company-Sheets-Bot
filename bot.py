@@ -96,12 +96,13 @@ async def on_ready():
         command_names = [cmd.name for cmd in global_synced]
         print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
         
-        # # ---- For faster testing, also sync to first guild ----
-        # if bot.guilds and os.getenv("IS_DEV") == "True":
-        #     guild = bot.guilds[0]
-        #     guild_synced = await tree.sync(guild=guild)
-        #     guild_names = [cmd.name for cmd in guild_synced]
-        #     print(f"Dev guild sync → {len(guild_synced)} commands to {guild.name}: {', '.join(guild_names)}")
+        # ---- Guild-specific sync (instant for guild commands) ----
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            guild_synced = await tree.sync(guild=guild)
+            guild_names = [cmd.name for cmd in guild_synced]
+            print(f"Guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
             
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
@@ -113,12 +114,24 @@ async def on_ready():
 @app_commands.default_permissions(administrator=True)
 @tree.command(name="sync_commands", description="Force-resync slash commands globally (admin only).")
 async def sync_commands(interaction: discord.Interaction):
-    await interaction.response.send_message("Syncing commands globally…", ephemeral=True)
+    await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        synced = await tree.sync()
-        command_names = [cmd.name for cmd in synced]
-        print(f"Manual sync → {len(synced)} commands: {', '.join(command_names)}")
-        response = f"✅ Synced **{len(synced)}** commands globally: `{', '.join(command_names)}`."
+        # Global sync
+        global_synced = await tree.sync()
+        global_names = [cmd.name for cmd in global_synced]
+        print(f"Manual global sync → {len(global_synced)} commands: {', '.join(global_names)}")
+        
+        # Guild sync if configured
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        guild_response = ""
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            guild_synced = await tree.sync(guild=guild)
+            guild_names = [cmd.name for cmd in guild_synced]
+            print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
+            guild_response = f"\n🏠 Guild: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`"
+        
+        response = f"✅ **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`{guild_response}"
         await interaction.followup.send(response, ephemeral=True)
         
     except Exception as e:
@@ -130,7 +143,7 @@ async def sync_commands(interaction: discord.Interaction):
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
-@tree.command(name="test_currency", description="Test command that replies with the currency emoji.")
+@tree.command(name="test_currency", description="Test command that replies with the currency emoji.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 async def test_currency(interaction: discord.Interaction):
     currency_emoji = (os.getenv("CURRENCY_EMOJI") or "").strip() or "💰"
     print(f"Currency emoji: {currency_emoji}")
@@ -139,7 +152,7 @@ async def test_currency(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ================= Sheets commands (optional) =================
-@tree.command(name="status", description="Check bot → Google Sheets connectivity.")
+@tree.command(name="status", description="Check bot → Google Sheets connectivity.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 async def status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
@@ -151,7 +164,7 @@ async def status(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Sheets error: `{e}`", ephemeral=True)
 
-@tree.command(name="append", description="Append a row: date, user, category.")
+@tree.command(name="append", description="Append a row: date, user, category.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 @app_commands.describe(username="Name to log", category="Category to log", worksheet="Optional worksheet/tab")
 async def append(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
     await interaction.response.defer(ephemeral=True)
@@ -164,7 +177,7 @@ async def append(interaction: discord.Interaction, username: str, category: str,
         except Exception as e:
             await interaction.followup.send(f"❌ Append failed: `{e}`", ephemeral=True)
 
-@tree.command(name="loguser", description="(Admins) Log a user to a category you pick.")
+@tree.command(name="loguser", description="(Admins) Log a user to a category you pick.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(username="User to log", category="Category", worksheet="Optional worksheet/tab")
 async def loguser(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
@@ -178,7 +191,7 @@ async def loguser(interaction: discord.Interaction, username: str, category: str
         except Exception as e:
             await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
 
-@tree.command(name="loguser_text", description="(Admins) Log a category for a name you type.")
+@tree.command(name="loguser_text", description="(Admins) Log a category for a name you type.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(username="Name to record (free text)", category="Category to log", worksheet="Optional worksheet/tab")
 async def loguser_text(interaction: discord.Interaction, username: str, category: str, worksheet: str | None = None):
@@ -192,7 +205,7 @@ async def loguser_text(interaction: discord.Interaction, username: str, category
         except Exception as e:
             await interaction.followup.send(f"❌ `{e}`", ephemeral=True)
 
-@tree.command(name="setcell", description="Set a single cell (A1) to a value.")
+@tree.command(name="setcell", description="Set a single cell (A1) to a value.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
 @app_commands.describe(a1="Cell (e.g., B2)", value="Value to write", worksheet="Optional worksheet/tab")
 async def setcell(interaction: discord.Interaction, a1: str, value: str, worksheet: str | None = None):
     await interaction.response.defer(ephemeral=True)
