@@ -109,10 +109,18 @@ async def on_ready():
         print(f"Debug: Found {len(global_commands)} global commands: {[cmd.name for cmd in global_commands]}")
         print(f"Debug: Found {len(guild_commands)} guild commands: {[cmd.name for cmd in guild_commands]}")
         
-        # Global sync (should only include commands without guild assignment)
+        # Temporarily remove guild commands from tree for global sync
+        for cmd in guild_commands:
+            tree.remove_command(cmd.name)
+            
+        # Global sync (now only includes global commands)
         global_synced = await tree.sync()
         command_names = [cmd.name for cmd in global_synced]
         print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
+        
+        # Add guild commands back to tree
+        for cmd in guild_commands:
+            tree.add_command(cmd)
             
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
@@ -139,11 +147,21 @@ async def sync_commands(interaction: discord.Interaction):
         # Global sync (should only include commands without guild assignment)
         all_commands = tree.get_commands()
         global_commands = [cmd for cmd in all_commands if not hasattr(cmd, 'guild') or cmd.guild is None]
+        guild_commands_manual = [cmd for cmd in all_commands if hasattr(cmd, 'guild') and cmd.guild is not None]
         
+        print(f"Manual sync - Expected global commands: {[cmd.name for cmd in global_commands]}")
+        
+        # Temporarily remove guild commands from tree for global sync
+        for cmd in guild_commands_manual:
+            tree.remove_command(cmd.name)
+            
         global_synced = await tree.sync()
         global_names = [cmd.name for cmd in global_synced]
         print(f"Manual global sync → {len(global_synced)} commands: {', '.join(global_names)}")
-        print(f"Expected global commands: {[cmd.name for cmd in global_commands]}")
+        
+        # Add guild commands back to tree
+        for cmd in guild_commands_manual:
+            tree.add_command(cmd)
         
         response = f"✅ {guild_response}🌐 **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`"
         await interaction.followup.send(response, ephemeral=True)

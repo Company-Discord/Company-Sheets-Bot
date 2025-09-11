@@ -22,6 +22,7 @@ def cur() -> str:
 def fmt(n: int) -> str:
     return f"{cur()} {n:,}"
 
+
 # ================= Logger =====================
 class TxLog:
     def __init__(self, bot: commands.Bot):
@@ -315,7 +316,7 @@ class HorseRace(commands.Cog):
         odds = self._odds(r)
         if odds:
             e.add_field(name="Current Odds (projected payouts)", value="\n".join(odds)[:1024], inline=False)
-        e.set_footer(text=f"Min: {fmt(r.min_bet)} | Max: {fmt(r.max_bet) if r.max_bet else '∞'}")
+        e.set_footer(text=f"Min: {r.min_bet:,}, | Max: {r.max_bet:, if r.max_bet:, else '∞'}")
         return e
 
     def track(self, r: Race) -> str:
@@ -527,7 +528,7 @@ class HorseRace(commands.Cog):
                                                        "winning_horse": r.horses[win]})
                     except Exception as e:
                         lines.append(f"• <@{b.user_id}> refund error: {e}")
-                footer = f"No winning bets — refunded 90% of pot. Burned **{fmt(pot - refund_pool)}**."
+                footer = f"No winning bets — refunded 90% of pot. Burned **{(pot - refund_pool):,} CC**."
 
         embed = discord.Embed(title="🏆 Race Results", color=discord.Color.green())
         embed.add_field(name="Podium", value=results, inline=False)

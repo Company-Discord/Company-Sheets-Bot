@@ -125,10 +125,5 @@ class Fun(commands.Cog):
     async def dummy(self, interaction: discord.Interaction):
         await interaction.response.send_message("You're a dummy")
 
-    @app_commands.command(name="dummy2", description="A simple dummy 2 command.")
-    async def dummy2(self, interaction: discord.Interaction):
-        await interaction.response.send_message("You're a dummy 2")
-
-
 async def setup(bot: commands.Bot):
     await bot.add_cog(Fun(bot))
