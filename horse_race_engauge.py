@@ -246,7 +246,7 @@ class LobbyView(discord.ui.View):
         if not self.race.open:
             return await interaction.response.send_message("Betting is already closed.", ephemeral=True)
         self.race.open = False
-        await interaction.response.send_message("Betting closed! Race will start…", ephemeral=True)
+        await interaction.response.send_message("Betting closed! Race is starting…")
         try:
             await self.race.lobby.edit(embed=self.cog.lobby_embed(self.race), view=None)
         except Exception:
@@ -260,6 +260,13 @@ class HorseRace(commands.Cog):
         self.wallet = Engauge()            # keep eager – you already had it working
         self.tx = TxLog(bot)
         self.active: Dict[int, Race] = {}  # channel_id -> race
+        
+        # Set all commands in this cog to be guild-specific
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            for command in self.__cog_app_commands__:
+                command.guild = guild_obj
 
     # ---- UI helpers ----
     def _odds(self, r: Race) -> List[str]:

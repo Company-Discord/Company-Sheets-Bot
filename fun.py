@@ -3,6 +3,7 @@ import io
 import random
 import aiohttp
 import discord
+import os
 from discord.ext import commands
 from discord import app_commands
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -18,6 +19,13 @@ HEADERS = {
 class Fun(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        
+        # Set all commands in this cog to be guild-specific
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            for command in self.__cog_app_commands__:
+                command.guild = guild_obj
 
     async def _download_bytes(self, session: aiohttp.ClientSession, url: str) -> bytes:
         # follow redirects and read bytes
@@ -108,6 +116,11 @@ class Fun(commands.Cog):
                 pass
             # Log full error to console for troubleshooting
             print("rat command failed:", repr(e))
+
+    @app_commands.command(name="dummy", description="A simple dummy command.")
+    async def dummy(self, interaction: discord.Interaction):
+        await interaction.response.send_message("You're a dummy")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Fun(bot))

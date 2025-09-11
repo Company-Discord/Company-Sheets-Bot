@@ -154,6 +154,13 @@ class DuelRoyale(commands.Cog):
         # Active users in a live duel/royale
         self.active_players: set[int] = set()
         # Pending /duelbet: target_id -> {'challenger': int, 'message_id': int, 'expires': float}
+        
+        # Set all commands in this cog to be guild-specific
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            for command in self.__cog_app_commands__:
+                command.guild = guild_obj
         self.pending_bets: dict[int, dict] = {}
         # Initialize UnbelievaBoat client
         self.unb_client: Client = None
