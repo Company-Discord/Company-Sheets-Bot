@@ -91,18 +91,28 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     try:
-        # ---- Global sync (takes up to 1 hour to propagate, but no duplicates) ----
-        global_synced = await tree.sync()
-        command_names = [cmd.name for cmd in global_synced]
-        print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
-        
-        # ---- Guild-specific sync (instant for guild commands) ----
         guild_id = os.getenv("DISCORD_GUILD_ID")
+        
+        # ---- Guild-specific sync first (instant for guild commands) ----
         if guild_id:
             guild = discord.Object(id=int(guild_id))
             guild_synced = await tree.sync(guild=guild)
             guild_names = [cmd.name for cmd in guild_synced]
             print(f"Guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
+        
+        # ---- Global sync (only commands without guild assignment) ----
+        # Check which commands are actually global
+        all_commands = tree.get_commands()
+        global_commands = [cmd for cmd in all_commands if not hasattr(cmd, 'guild') or cmd.guild is None]
+        guild_commands = [cmd for cmd in all_commands if hasattr(cmd, 'guild') and cmd.guild is not None]
+        
+        print(f"Debug: Found {len(global_commands)} global commands: {[cmd.name for cmd in global_commands]}")
+        print(f"Debug: Found {len(guild_commands)} guild commands: {[cmd.name for cmd in guild_commands]}")
+        
+        # Global sync (should only include commands without guild assignment)
+        global_synced = await tree.sync()
+        command_names = [cmd.name for cmd in global_synced]
+        print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
             
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
@@ -116,12 +126,7 @@ async def on_ready():
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        # Global sync
-        global_synced = await tree.sync()
-        global_names = [cmd.name for cmd in global_synced]
-        print(f"Manual global sync → {len(global_synced)} commands: {', '.join(global_names)}")
-        
-        # Guild sync if configured
+        # Guild sync first if configured
         guild_id = os.getenv("DISCORD_GUILD_ID")
         guild_response = ""
         if guild_id:
@@ -129,9 +134,18 @@ async def sync_commands(interaction: discord.Interaction):
             guild_synced = await tree.sync(guild=guild)
             guild_names = [cmd.name for cmd in guild_synced]
             print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
-            guild_response = f"\n🏠 Guild: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`"
+            guild_response = f"🏠 **Guild**: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`\n"
         
-        response = f"✅ **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`{guild_response}"
+        # Global sync (should only include commands without guild assignment)
+        all_commands = tree.get_commands()
+        global_commands = [cmd for cmd in all_commands if not hasattr(cmd, 'guild') or cmd.guild is None]
+        
+        global_synced = await tree.sync()
+        global_names = [cmd.name for cmd in global_synced]
+        print(f"Manual global sync → {len(global_synced)} commands: {', '.join(global_names)}")
+        print(f"Expected global commands: {[cmd.name for cmd in global_commands]}")
+        
+        response = f"✅ {guild_response}🌐 **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`"
         await interaction.followup.send(response, ephemeral=True)
         
     except Exception as e:
