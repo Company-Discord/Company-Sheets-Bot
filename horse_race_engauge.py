@@ -214,12 +214,11 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
         })
         await interaction.response.send_message(
             f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.",
-            ephemeral=True
         )
         try:
             if self.race.lobby:
                 await self.race.lobby.edit(embed=self.cog.lobby_embed(self.race),
-                                           view=self.cog.lobby_view(self.race))
+                                           view=LobbyView(self.cog, self.race))
         except Exception:
             pass
 
