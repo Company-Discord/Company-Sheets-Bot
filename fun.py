@@ -29,6 +29,7 @@ class Fun(commands.Cog):
             guild_obj = discord.Object(id=int(guild_id))
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj
+                print(f"[Fun] Assigned guild to command: {command.name}")
 
     async def _download_bytes(self, session: aiohttp.ClientSession, url: str) -> bytes:
         # follow redirects and read bytes

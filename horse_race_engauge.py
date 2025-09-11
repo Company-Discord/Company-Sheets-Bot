@@ -265,11 +265,19 @@ class HorseRace(commands.Cog):
         
         # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
+        print(f"[HorseRace] DISCORD_GUILD_ID from env: {guild_id}")
         if guild_id:
             print(f"[HorseRace] Setting guild-specific commands for {guild_id}")
             guild_obj = discord.Object(id=int(guild_id))
+            print(f"[HorseRace] Available commands: {[cmd.name for cmd in self.__cog_app_commands__]}")
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj
+                print(f"[HorseRace] Assigned guild to command: {command.name}")
+            # Also assign guild to the wallet group
+            self.wallet.guild = guild_obj
+            print(f"[HorseRace] Assigned guild to wallet group")
+        else:
+            print(f"[HorseRace] No DISCORD_GUILD_ID set - commands will be global")
 
     # ---- UI helpers ----
     def _odds(self, r: Race) -> List[str]:

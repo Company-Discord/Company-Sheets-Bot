@@ -162,6 +162,7 @@ class DuelRoyale(commands.Cog):
             guild_obj = discord.Object(id=int(guild_id))
             for command in self.__cog_app_commands__:
                 command.guild = guild_obj
+                print(f"[DuelRoyale] Assigned guild to command: {command.name}")
         self.pending_bets: dict[int, dict] = {}
         # Initialize UnbelievaBoat client
         self.unb_client: Client = None
