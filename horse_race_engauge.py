@@ -213,7 +213,7 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
             "amount": amt, "balance_after": bal_after
         })
         await interaction.response.send_message(
-            f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.",
+            f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.", ephemeral=True
         )
         try:
             if self.race.lobby:
