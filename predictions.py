@@ -12,7 +12,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 DB_PATH = "predictions.db"
-CURRENCY_ICON = os.getenv("CURRENCY_ICON", "<:CC:1415461798655819949>")
+CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
+if not CURRENCY_ICON:
+    raise RuntimeError("CURRENCY_EMOJI must be set in your .env")
 MIN_UNIQUE_BETTORS = int(os.getenv("PRED_MIN_UNIQUE", "4"))  # default 4
 
 # ---------- Permissions ----------
