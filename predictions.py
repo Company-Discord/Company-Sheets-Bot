@@ -132,6 +132,24 @@ class Predictions(commands.Cog):
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    # === NEW: counts per side + total ===
+    async def bettor_counts(self, guild_id: int) -> tuple[int, int, int]:
+        """Return (count_A, count_B, total_unique_bettors)."""
+        db = await self.get_db()
+        cur = await db.execute(
+            "SELECT side, COUNT(DISTINCT user_id) AS c FROM bets WHERE guild_id=? GROUP BY side",
+            (guild_id,)
+        )
+        a = b = 0
+        total = 0
+        for r in await cur.fetchall():
+            if r["side"] == "A":
+                a = int(r["c"])
+            elif r["side"] == "B":
+                b = int(r["c"])
+            total += int(r["c"])
+        return a, b, total
+
     async def _refund_everyone(self, guild_id: int, reason: str):
         db = await self.get_db()
         cur = await db.execute("SELECT * FROM bets WHERE guild_id=?", (guild_id,))
@@ -192,7 +210,7 @@ class Predictions(commands.Cog):
 
         db = await self.get_db()
         # refund any previous bet first
-        cur = await db.execute("SELECT amount FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
+        cur = await db.execute("SELECT amount, side FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
         row = await cur.fetchone()
         if row:
             old_amt = row["amount"]
@@ -296,6 +314,12 @@ class Predictions(commands.Cog):
                 return "—"
             return f"{total / my_pool:.2f}×"
 
+        # === NEW: bettor percentages ===
+        a_count, b_count, total_bettors = await self.bettor_counts(guild_id)
+
+        def pct(n: int, d: int) -> str:
+            return "0%" if d <= 0 else f"{(n * 100 / d):.0f}%"
+
         lock_ts = p["lock_ts"]
         rel = f"<t:{lock_ts}:R>"
         abs_t = f"<t:{lock_ts}:t>"
@@ -316,7 +340,14 @@ class Predictions(commands.Cog):
 
         e.add_field(name="Pool A", value=self.fmt_amt(pool_a), inline=True)
         e.add_field(name="Pool B", value=self.fmt_amt(pool_b), inline=True)
-        e.add_field(name="Current Odds", value=f"**A)** {mult(pool_a)}\n**B)** {mult(pool_b)}", inline=False)
+        e.add_field(
+            name="Current Odds",
+            value=(
+                f"**A)** {mult(pool_a)} · {pct(a_count, total_bettors)} of bettors ({a_count}/{total_bettors})\n"
+                f"**B)** {mult(pool_b)} · {pct(b_count, total_bettors)} of bettors ({b_count}/{total_bettors})"
+            ),
+            inline=False
+        )
         return e
 
     # ---------- Background task ----------
