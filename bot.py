@@ -72,7 +72,7 @@ def safe_set_cell(a1: str, value: str | int | float, worksheet_name: str | None 
 
 @bot.event
 async def setup_hook():
-    # --- Load cogs (adjust module path if yours are in /cogs) ---
+    # --- Load cogs ---
     try:
         await bot.load_extension("duel_royale")            # or: "cogs.duel_royale"
         print("Loaded duel_royale cog ✅")
@@ -92,9 +92,9 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
 
-    # ---- Load the Twitch-style Engauge predictions extension (predictions.py sits next to bot.py) ----
+    # ---- Load the Twitch-style Engauge predictions extension ----
     try:
-        await bot.load_extension("predictions")            # file: predictions.py (same folder)
+        await bot.load_extension("predictions")            # file: predictions.py
         print("Loaded predictions cog ✅")
     except Exception as e:
         print(f"Failed loading predictions: {e}")
