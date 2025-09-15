@@ -308,7 +308,8 @@ class Predictions(commands.Cog):
                 f"⏳ **Time left:** {rel}  (locks at {abs_t})\n\n"
                 f"**A)** {p['outcome_a']}\n"
                 f"**B)** {p['outcome_b']}\n\n"
-                f"⚠️ *Auto-cancels at lock if fewer than {MIN_UNIQUE_BETTORS} unique participants.*"
+                f"⚠️ Auto-cancels at lock if fewer than {MIN_UNIQUE_BETTORS} unique participants.\n"
+                f"➡️ Use `/pred_bet` to place your bets!"
             ),
             color=discord.Color.blurple(),
         )
