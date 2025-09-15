@@ -20,6 +20,10 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
 
+# Engauge token is required by predictions.py; if missing, we warn here so load failure is obvious
+if not os.getenv("ENGAUGE_API_TOKEN"):
+    print("⚠️  ENGAUGE_API_TOKEN is not set. The predictions extension will fail to load until you set it.")
+
 SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")            # the /d/<THIS>/edit ID
 WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Sheet1")  # your tab name
 SA_JSON_INLINE = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_INLINE")
@@ -86,6 +90,13 @@ async def setup_hook():
         print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
+
+    # ---- Load the Twitch-style Engauge predictions extension (predictions.py sits next to bot.py) ----
+    try:
+        await bot.load_extension("predictions")            # file: predictions.py (same folder)
+        print("Loaded predictions cog ✅")
+    except Exception as e:
+        print(f"Failed loading predictions: {e}")
 
 @bot.event
 async def on_ready():
