@@ -245,7 +245,7 @@ class Predictions(commands.Cog):
                 payout = int(w["amount"] * multiplier)
                 eng = EngaugeAdapter(inter.guild_id)
                 await eng.credit(w["user_id"], payout)
-            msg = f"Payouts sent to Outcome {winner} backers."
+            msg = f"# 🏆 Payouts sent to Outcome {winner} backers!"
 
         db = await self.get_db()
         await db.execute("UPDATE predictions SET status='resolved' WHERE guild_id=?", (inter.guild_id,))
