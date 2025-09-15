@@ -11,7 +11,9 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
+from dotenv import load_dotenv
 
+load_dotenv()
 # ================= Currency =================
 def cur() -> str:
     v = (os.getenv("CURRENCY_EMOJI") or "").strip()
@@ -19,6 +21,7 @@ def cur() -> str:
 
 def fmt(n: int) -> str:
     return f"{cur()} {n:,}"
+
 
 # ================= Logger =====================
 class TxLog:
@@ -212,14 +215,11 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
             "horse_idx": self.horse_idx, "horse_name": self.race.horses[self.horse_idx],
             "amount": amt, "balance_after": bal_after
         })
-        await interaction.response.send_message(
-            f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"Bet placed: **{fmt(amt)}** on **{self.race.horses[self.horse_idx]}**.", ephemeral=True)
         try:
             if self.race.lobby:
                 await self.race.lobby.edit(embed=self.cog.lobby_embed(self.race),
-                                           view=self.cog.lobby_view(self.race))
+                                           view=LobbyView(self.cog, self.race))
         except Exception:
             pass
 
@@ -249,7 +249,7 @@ class LobbyView(discord.ui.View):
         if not self.race.open:
             return await interaction.response.send_message("Betting is already closed.", ephemeral=True)
         self.race.open = False
-        await interaction.response.send_message("Betting closed! Race will start…", ephemeral=True)
+        await interaction.response.send_message("Betting closed! Race is starting…")
         try:
             await self.race.lobby.edit(embed=self.cog.lobby_embed(self.race), view=None)
         except Exception:
@@ -263,6 +263,22 @@ class HorseRace(commands.Cog):
         self.wallet = Engauge()            # keep eager – you already had it working
         self.tx = TxLog(bot)
         self.active: Dict[int, Race] = {}  # channel_id -> race
+        
+        # Set all commands in this cog to be guild-specific
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        print(f"[HorseRace] DISCORD_GUILD_ID from env: {guild_id}")
+        if guild_id:
+            print(f"[HorseRace] Setting guild-specific commands for {guild_id}")
+            guild_obj = discord.Object(id=int(guild_id))
+            print(f"[HorseRace] Available commands: {[cmd.name for cmd in self.__cog_app_commands__]}")
+            for command in self.__cog_app_commands__:
+                command.guild = guild_obj
+                print(f"[HorseRace] Assigned guild to command: {command.name}")
+            # Also assign guild to the wallet group
+            self.wallet.guild = guild_obj
+            print(f"[HorseRace] Assigned guild to wallet group")
+        else:
+            print(f"[HorseRace] No DISCORD_GUILD_ID set - commands will be global")
 
     # ---- UI helpers ----
     def _odds(self, r: Race) -> List[str]:
@@ -300,7 +316,7 @@ class HorseRace(commands.Cog):
         odds = self._odds(r)
         if odds:
             e.add_field(name="Current Odds (projected payouts)", value="\n".join(odds)[:1024], inline=False)
-        e.set_footer(text=f"Min: {fmt(r.min_bet)} | Max: {fmt(r.max_bet) if r.max_bet else '∞'}")
+        e.set_footer(text=f"Min: {r.min_bet:,} | Max: {r.max_bet:,}" if r.max_bet else f"Min: {r.min_bet:,} | Max: ∞")
         return e
 
     def track(self, r: Race) -> str:
@@ -314,7 +330,6 @@ class HorseRace(commands.Cog):
 
     # ---- Commands ----
     @app_commands.command(name="race", description="Start a horse race betting lobby (Engauge currency).")
-    @app_commands.checks.bot_has_permissions(send_messages=True, embed_links=True)
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
         rake="House rake in basis points (500=5%).",
@@ -513,7 +528,7 @@ class HorseRace(commands.Cog):
                                                        "winning_horse": r.horses[win]})
                     except Exception as e:
                         lines.append(f"• <@{b.user_id}> refund error: {e}")
-                footer = f"No winning bets — refunded 90% of pot. Burned **{fmt(pot - refund_pool)}**."
+                footer = f"No winning bets — refunded 90% of pot. Burned **{(pot - refund_pool):,} CC**."
 
         embed = discord.Embed(title="🏆 Race Results", color=discord.Color.green())
         embed.add_field(name="Podium", value=results, inline=False)
@@ -541,16 +556,4 @@ async def setup(bot: commands.Bot):
     cog = HorseRace(bot)  
     await bot.add_cog(cog)
 
-    
-    for cmd in (
-        getattr(cog, "race_cmd", None),    
-        getattr(cog, "bet_cmd", None),     
-        getattr(cog, "wallet", None),      
-        getattr(cog, "race_health", None), 
-    ):
-        try:
-            if cmd is not None:
-                bot.tree.add_command(cmd)
-        except Exception:
-            pass
 
