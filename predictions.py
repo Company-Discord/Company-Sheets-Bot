@@ -39,7 +39,7 @@ class EngaugeAdapter:
     """
     def __init__(self):
         self.base = "https://engau.ge/api/v1"
-        self.token = os.getenv("ENGAUGE_API_TOKEN", "")
+        self.token = os.getenv("ENGAUGE_API_TOKEN") or os.getenv("ENGAUGE_TOKEN", "")
         if not self.token:
             raise RuntimeError("ENGAUGE_API_TOKEN must be set")
 
