@@ -316,7 +316,7 @@ class HorseRace(commands.Cog):
         odds = self._odds(r)
         if odds:
             e.add_field(name="Current Odds (projected payouts)", value="\n".join(odds)[:1024], inline=False)
-        e.set_footer(text=f"Min: {r.min_bet:,}, | Max: {r.max_bet:, if r.max_bet:, else '∞'}")
+        e.set_footer(text=f"Min: {r.min_bet:,} | Max: {r.max_bet:,}" if r.max_bet else f"Min: {r.min_bet:,} | Max: ∞")
         return e
 
     def track(self, r: Race) -> str:
