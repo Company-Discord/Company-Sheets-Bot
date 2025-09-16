@@ -40,3 +40,13 @@ class EngaugeAdapter:
 
     async def credit(self, member_id: int, amount: int):
         return await self.adjust(member_id, abs(int(amount)))
+
+    async def get_balance(self, member_id: int) -> int:
+        """Get the current balance for a member"""
+        url = f"{self.base}/servers/{self.server_id}/members/{int(member_id)}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=self._headers()) as r:
+                r.raise_for_status()
+                data = await r.json()
+                # Return the currency field from the member stats
+                return int(data.get('currency', 0))

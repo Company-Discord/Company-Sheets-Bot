@@ -246,6 +246,9 @@ class Predictions(commands.Cog):
         try:
             if not self.engauge_client:
                 return await inter.followup.send("Engauge client not available.", ephemeral=True)
+            balance = await self.engauge_client.get_balance(inter.user.id)
+            if balance < amount:
+                return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
             await self.engauge_client.debit(inter.user.id, amount)
         except InsufficientFunds:
             return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
