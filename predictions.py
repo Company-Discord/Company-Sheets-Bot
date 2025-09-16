@@ -8,6 +8,7 @@ from discord import app_commands
 from datetime import datetime
 
 from utils import is_admin_or_manager
+from engauge_adapter import EngaugeAdapter, InsufficientFunds
 
 # ================== Config ===================
 DB_PATH = "predictions.db"
@@ -18,52 +19,17 @@ if not CURRENCY_ICON:
 
 MIN_UNIQUE_BETTORS = int(os.getenv("PRED_MIN_UNIQUE", "4"))  # default 4
 
-# ================== Errors ===================
-class InsufficientFunds(Exception):
-    pass
-
-# ================== Engauge API ===================
-class EngaugeAdapter:
-    """
-    Engauge currency client.
-    Uses POST https://engau.ge/api/v1/servers/{server_id}/members/{member_id}/currency?amount=±N
-    """
-
-    def __init__(self, server_id: int):
-        self.base = "https://engau.ge/api/v1"
-        self.token = os.getenv("ENGAUGE_API_TOKEN") or os.getenv("ENGAUGE_TOKEN", "")
-        self.server_id = int(server_id)
-        if not self.token:
-            raise RuntimeError("ENGAUGE_API_TOKEN or ENGAUGE_TOKEN must be set")
-
-    def _headers(self):
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Accept": "application/json",
-        }
-
-    async def adjust(self, member_id: int, amount: int):
-        url = f"{self.base}/servers/{self.server_id}/members/{int(member_id)}/currency"
-        params = {"amount": str(int(amount))}
-        async with aiohttp.ClientSession() as s:
-            async with s.post(url, params=params, headers=self._headers()) as r:
-                if r.status == 402:
-                    raise InsufficientFunds("Insufficient balance")
-                r.raise_for_status()
-                return await r.json()
-
-    async def debit(self, member_id: int, amount: int):
-        return await self.adjust(member_id, -abs(int(amount)))
-
-    async def credit(self, member_id: int, amount: int):
-        return await self.adjust(member_id, abs(int(amount)))
-
-
 # ================== Cog ===================
 class Predictions(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = None
+        # Initialize static Engauge client
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            self.engauge_client = EngaugeAdapter(int(guild_id))
+        else:
+            self.engauge_client = None
         self._lock_task.start()
                 # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
@@ -224,8 +190,8 @@ class Predictions(commands.Cog):
         bets = await cur.fetchall()
         for b in bets:
             try:
-                eng = EngaugeAdapter(guild_id)
-                await eng.credit(b["user_id"], b["amount"])
+                if self.engauge_client:
+                    await self.engauge_client.credit(b["user_id"], b["amount"])
             except Exception as e:
                 print("refund error", e)
         await db.execute("DELETE FROM bets WHERE guild_id=?", (guild_id,))
@@ -278,8 +244,9 @@ class Predictions(commands.Cog):
             return await inter.followup.send("No open prediction.", ephemeral=True)
 
         try:
-            eng = EngaugeAdapter(inter.guild_id)
-            await eng.debit(inter.user.id, amount)
+            if not self.engauge_client:
+                return await inter.followup.send("Engauge client not available.", ephemeral=True)
+            await self.engauge_client.debit(inter.user.id, amount)
         except InsufficientFunds:
             return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
 
@@ -290,7 +257,8 @@ class Predictions(commands.Cog):
         if row:
             old_amt = row["amount"]
             old_side = row["side"]
-            await eng.credit(inter.user.id, old_amt)
+            if self.engauge_client:
+                await self.engauge_client.credit(inter.user.id, old_amt)
             await db.execute("DELETE FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
             await db.commit()
             await inter.followup.send(
@@ -335,8 +303,8 @@ class Predictions(commands.Cog):
             winners = await cur.fetchall()
             for w in winners:
                 payout = int(w["amount"] * multiplier)
-                eng = EngaugeAdapter(inter.guild_id)
-                await eng.credit(w["user_id"], payout)
+                if self.engauge_client:
+                    await self.engauge_client.credit(w["user_id"], payout)
             msg = f"# 🏆 Payouts sent to Outcome {winner} backers!"
 
         db = await self.get_db()
@@ -464,8 +432,8 @@ class Predictions(commands.Cog):
             e.add_field(
                 name="Current Odds",
                 value=(
-                    f"**A)** {mult(pool_a)} · {pct(a_count, total_bettors)} of bettors ({a_count}/{total_bettors})\n"
-                    f"**B)** {mult(pool_b)} · {pct(b_count, total_bettors)} of bettors ({b_count}/{total_bettors})"
+                    f"**A)** {mult(pool_a)} - {self.fmt_amt(pool_a)} bet by {a_count} players\n"
+                    f"**B)** {mult(pool_b)} - {self.fmt_amt(pool_b)} bet by {b_count} players"
                 ),
                 inline=False
             )

@@ -9,9 +9,9 @@ from discord.ext import commands
 from discord import app_commands
 from unbelievaboat_api import Client, quick_get_balance, quick_get_leaderboard
 from dotenv import load_dotenv
+from utils import check_user_balances, send_insufficient_funds_message, initialize_unb_client, close_unb_client, get_unb_client
 
 load_dotenv()
-API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN", "your-api-token-here")
 # ========= Tunables =========
 START_HP = 100
 ROUND_DELAY = 1.0              # seconds between narration lines
@@ -164,23 +164,16 @@ class DuelRoyale(commands.Cog):
                 command.guild = guild_obj
                 print(f"[DuelRoyale] Assigned guild to command: {command.name}")
         self.pending_bets: dict[int, dict] = {}
-        # Initialize UnbelievaBoat client
-        self.unb_client: Client = None
         
     async def cog_load(self):
         """Initialize the UnbelievaBoat client when cog loads."""
-        if(os.getenv("IS_DEV") == "True"):
-            API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN_DEV", "your-api-token-here")
-        else:
-            API_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN", "your-api-token-here")
-        self.unb_client = Client(API_TOKEN)
+        is_dev = os.getenv("IS_DEV") == "True"
+        initialize_unb_client(is_dev)
         print("✅ UnbelievaBoat client initialized")
         
     async def cog_unload(self):
         """Clean up the UnbelievaBoat client when cog unloads."""
-        if self.unb_client:
-            await self.unb_client.close()
-            print("🔧 UnbelievaBoat client closed")
+        await close_unb_client()
 
     # ----- core fight runner -----
     async def _run_duel(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member, bet_amount: int = 0):
@@ -188,9 +181,18 @@ class DuelRoyale(commands.Cog):
 
         followup = interaction.followup
         if bet_amount > 0:
-            check_sufficient_balance = await self.check_sufficient_balance(interaction.guild_id, [p1.id, p2.id], bet_amount, followup)
-            if not check_sufficient_balance[0]:
-                await followup.send(f"❌ Duel cancelled due to insufficient balance(s).")
+            try:
+                all_sufficient, balances, insufficient_users = await check_user_balances(
+                    interaction.guild_id, [p1.id, p2.id], bet_amount
+                )
+                if not all_sufficient:
+                    await send_insufficient_funds_message(followup, insufficient_users, bet_amount, balances)
+                    await followup.send(f"❌ Duel cancelled due to insufficient balance(s).")
+                    return
+            except Exception as e:
+                error_msg = f"Error checking balances: {e}"
+                print(error_msg)
+                await followup.send(f"❌ {error_msg}")
                 return
         names = {p1.id: p1.display_name, p2.id: p2.display_name}
         hp = {p1.id: START_HP, p2.id: START_HP}
@@ -278,52 +280,6 @@ class DuelRoyale(commands.Cog):
             self.active_players.discard(p1.id)
             self.active_players.discard(p2.id)
 
-    async def check_sufficient_balance(self, guild_id: int, user_ids: list[int], bet_amount: int, 
-                                     followup: discord.Webhook = None, silent: bool = False) -> tuple[bool, dict[int, int]]:
-        """
-        Check if all users have sufficient balance for the bet amount.
-        
-        Args:
-            guild_id: Discord guild ID
-            user_ids: List of Discord user IDs to check
-            bet_amount: Required bet amount
-            followup: Optional webhook for error messages
-            silent: If True, don't send error messages
-            
-        Returns:
-            tuple: (all_sufficient: bool, balances: dict[user_id: cash_amount])
-        """
-        try:
-            if not self.unb_client:
-                raise Exception("UnbelievaBoat client not initialized")
-            
-            balances = {}
-            insufficient_users = []
-            
-            # Check each user's balance
-            for user_id in user_ids:
-                user = await self.unb_client.get_user_balance(guild_id, user_id)
-                balances[user_id] = user.cash
-                
-                if user.cash < bet_amount:
-                    insufficient_users.append(user_id)
-            
-            # Report insufficient funds if any
-            if insufficient_users and not silent and followup:
-                insufficient_mentions = [f"<@{uid}>" for uid in insufficient_users]
-                await followup.send(
-                    f"❌ Insufficient funds! {', '.join(insufficient_mentions)} need at least ${bet_amount} cash. "
-                    f"Current balances: {', '.join([f'<@{uid}>: ${balances[uid]}' for uid in insufficient_users])}"
-                )
-            
-            return len(insufficient_users) == 0, balances
-                
-        except Exception as e:
-            error_msg = f"Error checking balances: {e}"
-            print(error_msg)
-            if not silent and followup:
-                await followup.send(f"❌ {error_msg}")
-            return False, {}
 
     async def transfer_balance(self, guild_id: int, winner_id: int, loser_id: int, bet_amount: int, 
                              followup: discord.Webhook = None, silent: bool = False) -> bool:
@@ -342,15 +298,14 @@ class DuelRoyale(commands.Cog):
             bool: True if transfer successful, False otherwise
         """
         try:
-            if not self.unb_client:
-                raise Exception("UnbelievaBoat client not initialized")
+            unb_client = get_unb_client()
                 
             if not silent and followup:
                 await followup.send(f"Initiating Cash transfer from <@{loser_id}> to <@{winner_id}> in the amount of {bet_amount}")
             
             # Update balances: subtract from loser, add to winner
-            await self.unb_client.update_user_balance(guild_id, loser_id, cash=-bet_amount, reason="Duel loss")
-            await self.unb_client.update_user_balance(guild_id, winner_id, cash=bet_amount, reason="Duel win")
+            await unb_client.update_user_balance(guild_id, loser_id, cash=-bet_amount, reason="Duel loss")
+            await unb_client.update_user_balance(guild_id, winner_id, cash=bet_amount, reason="Duel win")
             
             if not silent and followup:
                 await followup.send(f"Cash transfer complete")
