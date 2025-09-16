@@ -1,11 +1,11 @@
-# CC to TC cog without DB
+# CC to TC without DB 
 import os
 import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Emojis (set these in your .env for custom server emojis)
+# Emojis (set these in .env for custom server emojis)
 UNB_ICON = os.getenv("CURRENCY_EMOTE", "")      # UnbelievaBoat
 ENG_ICON = os.getenv("CURRENCY_EMOJI", "")      # Engauge 
 
@@ -78,11 +78,10 @@ class UnbelievaBoat:
         await self.update_cash(guild_id, user_id, abs(int(amount)), reason)
 
 # ============================ Modal ============================
-class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
-    # Emoji is placed in the placeholder where it WILL render.
+class BuyUnbModal(discord.ui.Modal, title="Buy TC"):
     eng_amount = discord.ui.TextInput(
-        label="Amount to spend",
-        placeholder=f"e.g., 5 {os.getenv('CURRENCY_EMOJI', '🪙')}",
+        label="How much CC do you want to spend?",
+        placeholder="e.g., 5",
         min_length=1,
         max_length=10
     )
@@ -146,13 +145,12 @@ class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
 class Fun(commands.Cog):
     """
     Minimal 'fun' cog containing only the exchange commands.
-    Keep this filename/extension the same if your bot already loads `fun`.
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._eng = Engauge()
         self._unb = UnbelievaBoat()
-        self._rate = UNB_PER_ENG  # fixed at startup (env or code)
+        self._rate = UNB_PER_ENG
 
         # Optional: scope slash commands to a single guild to speed up registration
         guild_id = os.getenv("DISCORD_GUILD_ID")
@@ -170,7 +168,7 @@ class Fun(commands.Cog):
             ephemeral=True
         )
 
-    @exchange.command(name="buy", description="Buy UnbelievaBoat using Engauge (opens a pop-up)")
+    @exchange.command(name="buy", description="Buy TC using CC (opens a pop-up)")
     async def exchange_buy(self, interaction: discord.Interaction):
         modal = BuyUnbModal(self, interaction, self._rate)
         await interaction.response.send_modal(modal)
