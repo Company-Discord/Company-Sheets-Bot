@@ -232,6 +232,7 @@ class Predictions(commands.Cog):
     # ---------- Slash commands ----------
     @app_commands.command(name="pred_start", description="(Admin) Start a new prediction")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_role("Techie")
     async def start(
         self,
         inter: discord.Interaction,
@@ -309,6 +310,7 @@ class Predictions(commands.Cog):
 
     @app_commands.command(name="pred_resolve", description="(Admin) Resolve and pay out a prediction")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_role("Techie")
     async def resolve(self, inter: discord.Interaction, winner: str):
         winner = winner.upper()
         if winner not in ("A", "B"):
@@ -347,6 +349,7 @@ class Predictions(commands.Cog):
 
     @app_commands.command(name="pred_cancel", description="(Admin) Cancel the current prediction and refund all")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_role("Techie")
     async def cancel(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         pred = await self.current_pred(inter.guild_id)
