@@ -1,4 +1,4 @@
-# crash.py — in-memory, Cash Out button, Mixture risk (Option B)
+# crash.py — UnbelievaBoat edition (in-memory, Cash Out button, Mixture risk)
 import os
 import math
 import random
@@ -12,22 +12,26 @@ from discord.ext import commands
 from discord import app_commands
 from discord.app_commands import CheckFailure
 
-# Use your shared role check
-from utils import is_admin_or_manager, MANAGER_ROLE_NAME
+# Import permissions from utils.py
+from utils import is_admin_or_manager
 
 # ============================ Config ============================
 
-CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
+CURRENCY_ICON = os.getenv("CURRENCY_EMOTE") 
 if not CURRENCY_ICON:
-    raise RuntimeError("CURRENCY_EMOJI must be set in your .env (e.g., <:CC:1234567890>)")
+    raise RuntimeError("CURRENCY_EMOTE must be set in your .env ")
+
+UNB_TOKEN = os.getenv("UNBELIEVABOAT_TOKEN")
+if not UNB_TOKEN:
+    raise RuntimeError("UNBELIEVABOAT_TOKEN must be set in your .env")
 
 # Game tuning
-TICK_SECONDS = 1.0            # embed update frequency while flying
-GROWTH_PER_TICK = 0.08        # was 0.06 → faster climbs for more intensity
-
-RISK_MIX_P_HARSH = 0.75       
-MEAN_HARSH = 0.5              
-MEAN_LUCKY = 2.0              
+TICK_SECONDS = 1.0            
+GROWTH_PER_TICK = 0.08        
+# Mixture risk model (high-risk/high-reward)
+RISK_MIX_P_HARSH = 0.65       # 65% harsh, 35% lucky
+MEAN_HARSH = 0.8              # avg crash ≈ 1.8×
+MEAN_LUCKY = 3.0              # avg crash ≈ 4.0×
 RNG = random.SystemRandom()
 
 def draw_crash_multiplier() -> float:
@@ -37,40 +41,62 @@ def draw_crash_multiplier() -> float:
     else:
         return 1.0 + RNG.expovariate(1.0 / MEAN_LUCKY)
 
-# ============================ Engauge Adapter ============================
+# ============================ UnbelievaBoat Adapter ============================
 
-class EngaugeError(Exception):
+class UnbAPIError(Exception):
     pass
 
-class InsufficientFunds(EngaugeError):
+class InsufficientFunds(UnbAPIError):
     pass
 
-class Engauge:
-    """Server-scoped Engauge currency adjuster."""
-    def __init__(self):
-        self.base = "https://engau.ge/api/v1"
-        self.token = os.getenv("ENGAUGE_API_TOKEN") or os.getenv("ENGAUGE_TOKEN", "")
-        if not self.token:
-            raise RuntimeError("ENGAUGE_API_TOKEN or ENGAUGE_TOKEN must be set in your environment")
+class UnbelievaBoat:
+    """
+    Minimal UnbelievaBoat API client for cash balance deltas.
+
+    Docs:
+      - Base URL: https://unbelievaboat.com/api/{version} (v1) :contentReference[oaicite:1]{index=1}
+      - PATCH /v1/guilds/{guild_id}/users/{user_id} to add/remove cash (JSON body with 'cash'). :contentReference[oaicite:2]{index=2}
+      - GET same path returns balance (not used here). :contentReference[oaicite:3]{index=3}
+    """
+    def __init__(self, token: str):
+        self.base = "https://unbelievaboat.com/api/v1"
+        self.token = token
 
     def _headers(self):
-        return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+        # Authorization header is the raw token (no 'Bearer'/'Bot' prefix). :contentReference[oaicite:4]{index=4}
+        return {
+            "Authorization": self.token,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
 
-    async def adjust(self, guild_id: int, user_id: int, amount: int):
-        url = f"{self.base}/servers/{int(guild_id)}/members/{int(user_id)}/currency"
-        params = {"amount": str(int(amount))}
+    async def update_cash(self, guild_id: int, user_id: int, delta: int, reason: str):
+        """
+        Increase/decrease user's cash by delta (negative for debit).
+        Endpoint: PATCH /guilds/{guild_id}/users/{user_id}
+        Body: {"cash": <delta>, "reason": "..."}  (bank omitted)
+        """
+        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
+        payload = {"cash": int(delta), "reason": reason}
         async with aiohttp.ClientSession() as s:
-            async with s.post(url, params=params, headers=self._headers()) as r:
-                if r.status == 402:
-                    raise InsufficientFunds("Insufficient Engauge balance")
+            async with s.patch(url, json=payload, headers=self._headers()) as r:
                 if r.status >= 400:
-                    raise EngaugeError(f"HTTP {r.status}: {await r.text()}")
+                    # Try to detect insufficient funds (common 400 message)
+                    try:
+                        data = await r.json()
+                        msg = str(data)
+                    except Exception:
+                        msg = await r.text()
+                    msg_lower = msg.lower()
+                    if "insufficient" in msg_lower or "not enough" in msg_lower:
+                        raise InsufficientFunds(msg)
+                    raise UnbAPIError(f"HTTP {r.status}: {msg}")
 
-    async def debit(self, guild_id: int, user_id: int, amount: int):
-        await self.adjust(guild_id, user_id, -abs(int(amount)))
+    async def debit(self, guild_id: int, user_id: int, amount: int, reason: str):
+        await self.update_cash(guild_id, user_id, -abs(int(amount)), reason)
 
-    async def credit(self, guild_id: int, user_id: int, amount: int):
-        await self.adjust(guild_id, user_id, abs(int(amount)))
+    async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
+        await self.update_cash(guild_id, user_id, abs(int(amount)), reason)
 
 
 # ============================ Round State (in-memory) ============================
@@ -117,9 +143,9 @@ class CrashView(discord.ui.View):
 
         payout = int(math.floor(b.amount * rs.current_mult))
         try:
-            await self.cog.eng.credit(self.guild_id, inter.user.id, payout)
+            await self.cog.unb.credit(self.guild_id, inter.user.id, payout, reason="Crash cashout")
         except Exception as e:
-            return await inter.response.send_message(f"⚠️ Engauge error: {e}", ephemeral=True)
+            return await inter.response.send_message(f"⚠️ UnbelievaBoat error: {e}", ephemeral=True)
 
         b.cashed_out = True
         b.payout = payout
@@ -135,7 +161,7 @@ class CrashView(discord.ui.View):
 class Crash(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.eng = Engauge()
+        self.unb = UnbelievaBoat(UNB_TOKEN)
         self.rounds: Dict[int, RoundState] = {}  # in-memory per-guild
 
     # ---- Clear message for failed permission checks ----
@@ -247,12 +273,11 @@ class Crash(commands.Cog):
         rs.status = "flying"
         rs.started_ts = int(discord.utils.utcnow().timestamp())
         rs.current_mult = 1.0
-        rs.crash_at_multiplier = draw_crash_multiplier()   # << Mixture risk draw
+        rs.crash_at_multiplier = draw_crash_multiplier()  # mixture risk
         await self._refresh_embed(guild_id)
 
         # Fly until crash
         while rs.current_mult < rs.crash_at_multiplier and rs.status == "flying":
-            # Faster climbs for drama
             rs.current_mult *= (1.0 + GROWTH_PER_TICK)
             if rs.current_mult > 1000:  # safety clamp
                 rs.current_mult = 1000.0
@@ -262,7 +287,7 @@ class Crash(commands.Cog):
                 if not b.cashed_out and b.auto_cashout and rs.current_mult >= b.auto_cashout:
                     payout = int(math.floor(b.amount * rs.current_mult))
                     try:
-                        await self.eng.credit(guild_id, uid, payout)
+                        await self.unb.credit(guild_id, uid, payout, reason="Crash auto-cashout")
                         b.cashed_out = True
                         b.payout = payout
                     except Exception as e:
@@ -282,7 +307,7 @@ class Crash(commands.Cog):
         await self._refresh_embed(guild_id, footer="Round settled. Start a new one with /crash start")
 
         await asyncio.sleep(3.0)
-        # Reset to idle; keep the message hook so new rounds reuse same thread
+        # Reset to idle; keep the message hook for continuity
         self.rounds[guild_id] = RoundState(guild_id=guild_id, channel_id=rs.channel_id, message_id=rs.message_id)
 
     # -------- Commands --------
@@ -349,12 +374,12 @@ class Crash(commands.Cog):
         existing = rs.bets.get(inter.user.id)
         try:
             if existing:
-                await self.eng.credit(inter.guild_id, inter.user.id, existing.amount)  # refund old
-            await self.eng.debit(inter.guild_id, inter.user.id, amount)               # charge new
+                await self.unb.credit(inter.guild_id, inter.user.id, existing.amount, reason="Crash bet replace refund")
+            await self.unb.debit(inter.guild_id, inter.user.id, amount, reason="Crash bet stake")
         except InsufficientFunds:
             return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
         except Exception as e:
-            return await inter.followup.send(f"Engauge error: {e}", ephemeral=True)
+            return await inter.followup.send(f"UnbelievaBoat error: {e}", ephemeral=True)
 
         rs.bets[inter.user.id] = Bet(
             user_id=inter.user.id,
@@ -382,9 +407,9 @@ class Crash(commands.Cog):
 
         payout = int(math.floor(b.amount * rs.current_mult))
         try:
-            await self.eng.credit(inter.guild_id, inter.user.id, payout)
+            await self.unb.credit(inter.guild_id, inter.user.id, payout, reason="Crash manual cashout")
         except Exception as e:
-            return await inter.followup.send(f"Engauge error while paying out: {e}", ephemeral=True)
+            return await inter.followup.send(f"UnbelievaBoat error while paying out: {e}", ephemeral=True)
 
         b.cashed_out = True
         b.payout = payout
@@ -406,12 +431,12 @@ class Crash(commands.Cog):
         for uid, b in list(rs.bets.items()):
             if not b.cashed_out and b.amount > 0:
                 try:
-                    await self.eng.credit(inter.guild_id, uid, b.amount)
+                    await self.unb.credit(inter.guild_id, uid, b.amount, reason="Crash round canceled refund")
                 except Exception as e:
                     print("refund error:", e)
 
         # reset state
-        self.rounds[guild_id] = RoundState(guild_id=inter.guild_id)
+        self.rounds[inter.guild_id] = RoundState(guild_id=inter.guild_id)
         await inter.followup.send("Round canceled. Refunds sent.", ephemeral=True)
         chmsg = await self._get_channel_message(inter.guild_id)
         if chmsg:
