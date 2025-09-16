@@ -7,9 +7,11 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime
 
+from utils import is_admin_or_manager
+
 # ================== Config ===================
 DB_PATH = "predictions.db"
-
+MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
 CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
 if not CURRENCY_ICON:
     raise RuntimeError("CURRENCY_EMOJI must be set in your .env")
@@ -231,8 +233,7 @@ class Predictions(commands.Cog):
 
     # ---------- Slash commands ----------
     @app_commands.command(name="pred_start", description="(Admin/Techie) Start a new prediction")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_role("Techie")
+    @is_admin_or_manager()
     async def start(
         self,
         inter: discord.Interaction,
@@ -309,8 +310,7 @@ class Predictions(commands.Cog):
         await self.update_embed(inter.guild_id)
 
     @app_commands.command(name="pred_resolve", description="(Admin/Techie) Resolve and pay out a prediction")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_role("Techie")
+    @is_admin_or_manager()
     async def resolve(self, inter: discord.Interaction, winner: str):
         winner = winner.upper()
         if winner not in ("A", "B"):
@@ -348,8 +348,7 @@ class Predictions(commands.Cog):
         await self.update_embed(inter.guild_id, content=msg)
 
     @app_commands.command(name="pred_cancel", description="(Admin/Techie) Cancel the current prediction and refund all")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_role("Techie")
+    @is_admin_or_manager()
     async def cancel(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         pred = await self.current_pred(inter.guild_id)
