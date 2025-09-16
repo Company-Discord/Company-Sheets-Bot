@@ -230,7 +230,7 @@ class Predictions(commands.Cog):
         await db.commit()
 
     # ---------- Slash commands ----------
-    @app_commands.command(name="pred_start", description="(Admin) Start a new prediction")
+    @app_commands.command(name="pred_start", description="(Admin/Techie) Start a new prediction")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_role("Techie")
     async def start(
@@ -308,7 +308,7 @@ class Predictions(commands.Cog):
         # Update the existing embed instead of sending a new one
         await self.update_embed(inter.guild_id)
 
-    @app_commands.command(name="pred_resolve", description="(Admin) Resolve and pay out a prediction")
+    @app_commands.command(name="pred_resolve", description="(Admin/Techie) Resolve and pay out a prediction")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_role("Techie")
     async def resolve(self, inter: discord.Interaction, winner: str):
@@ -347,7 +347,7 @@ class Predictions(commands.Cog):
         # Update the existing embed with the resolution message
         await self.update_embed(inter.guild_id, content=msg)
 
-    @app_commands.command(name="pred_cancel", description="(Admin) Cancel the current prediction and refund all")
+    @app_commands.command(name="pred_cancel", description="(Admin/Techie) Cancel the current prediction and refund all")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_role("Techie")
     async def cancel(self, inter: discord.Interaction):
