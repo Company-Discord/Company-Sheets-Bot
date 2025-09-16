@@ -1,23 +1,22 @@
-# CC to TC cog without DB -----
+# CC to TC cog without DB
 import os
 import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
 
-# Icons (use your custom emojis if set in .env)
+# Emojis (set these in your .env for custom server emojis)
 UNB_ICON = os.getenv("CURRENCY_EMOTE", "")      # UnbelievaBoat
 ENG_ICON = os.getenv("CURRENCY_EMOJI", "")      # Engauge 
 
-# Fixed conversion rate:
-# Set in .env: EXCHANGE_RATE_UNB_PER_ENG=125
+# Fixed conversion rate (override via .env EXCHANGE_RATE_UNB_PER_ENG)
 UNB_PER_ENG = int(os.getenv("EXCHANGE_RATE_UNB_PER_ENG", "125"))
 
-# ============================ API Adapters ============================
-
+# ============================ Exceptions ============================
 class ProviderError(Exception): ...
 class InsufficientFunds(ProviderError): ...
 
+# ============================ API Adapters ============================
 class Engauge:
     """Server-scoped Engauge currency adjuster (POST amount delta)."""
     def __init__(self):
@@ -55,7 +54,7 @@ class UnbelievaBoat:
 
     def _headers(self):
         return {
-            "Authorization": self.token,  # raw token, no 'Bearer'
+            "Authorization": self.token,   # raw token
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -79,26 +78,26 @@ class UnbelievaBoat:
         await self.update_cash(guild_id, user_id, abs(int(amount)), reason)
 
 # ============================ Modal ============================
-
 class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
+    # Emoji is placed in the placeholder where it WILL render.
     eng_amount = discord.ui.TextInput(
-        label=f"{ENG_ICON} amount to spend",
-        placeholder="e.g., 5",
+        label="Amount to spend",
+        placeholder=f"e.g., 5 {os.getenv('CURRENCY_EMOJI', '🪙')}",
         min_length=1,
         max_length=10
     )
 
-    def __init__(self, cog: "ExchangeSimple", inter: discord.Interaction, rate: int):
+    def __init__(self, cog: "Fun", inter: discord.Interaction, rate: int):
         super().__init__()
         self.cog = cog
         self.inter = inter
-        self.rate = rate  # UNB given per 1 ENG
+        self.rate = rate  # UNB granted per 1 ENG
 
     async def on_submit(self, interaction: discord.Interaction):
         if interaction.user.id != self.inter.user.id:
             return await interaction.response.send_message("This modal isn't for you.", ephemeral=True)
 
-        # Parse
+        # Parse input
         try:
             eng_amt = int(str(self.eng_amount.value).strip())
             if eng_amt <= 0:
@@ -108,18 +107,19 @@ class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
 
         unb_gain = eng_amt * self.rate
 
-        # Debit Engauge, then credit UNB; refund if UNB fails
+        # Debit Engauge → then credit UNB; refund on UNB failure
         try:
-            await self.cog.eng.debit(self.inter.guild_id, self.inter.user.id, eng_amt)
+            await self.cog._eng.debit(self.inter.guild_id, self.inter.user.id, eng_amt)
         except InsufficientFunds:
             return await interaction.response.send_message(
-                f"You don't have enough {ENG_ICON} to spend **{eng_amt:,}**.", ephemeral=True
+                f"You don't have enough {ENG_ICON} to spend **{eng_amt:,}**.",
+                ephemeral=True
             )
         except Exception as e:
             return await interaction.response.send_message(f"Engauge error: {e}", ephemeral=True)
 
         try:
-            await self.cog.unb.credit(
+            await self.cog._unb.credit(
                 self.inter.guild_id,
                 self.inter.user.id,
                 unb_gain,
@@ -128,11 +128,12 @@ class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
         except Exception as e:
             # Refund Engauge on failure
             try:
-                await self.cog.eng.credit(self.inter.guild_id, self.inter.user.id, eng_amt)
+                await self.cog._eng.credit(self.inter.guild_id, self.inter.user.id, eng_amt)
             except Exception as e2:
                 print("Refund failed after UNB error:", e2)
             return await interaction.response.send_message(
-                f"UnbelievaBoat error: {e}. Refunded your {ENG_ICON}.", ephemeral=True
+                f"UnbelievaBoat error: {e}. Refunded your {ENG_ICON}.",
+                ephemeral=True
             )
 
         await interaction.response.send_message(
@@ -142,27 +143,37 @@ class BuyUnbModal(discord.ui.Modal, title="Buy UnbelievaBoat"):
         )
 
 # ============================ Cog ============================
-
-class ExchangeSimple(commands.Cog):
+class Fun(commands.Cog):
+    """
+    Minimal 'fun' cog containing only the exchange commands.
+    Keep this filename/extension the same if your bot already loads `fun`.
+    """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.eng = Engauge()
-        self.unb = UnbelievaBoat()
-        self.rate = UNB_PER_ENG  # fixed at startup (env or code)
+        self._eng = Engauge()
+        self._unb = UnbelievaBoat()
+        self._rate = UNB_PER_ENG  # fixed at startup (env or code)
 
-    group = app_commands.Group(name="exchange", description="Engauge → UnbelievaBoat")
+        # Optional: scope slash commands to a single guild to speed up registration
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            for cmd in self.__cog_app_commands__:
+                cmd.guild = guild_obj
 
-    @group.command(name="rate", description="Show the current fixed rate")
-    async def rate_cmd(self, inter: discord.Interaction):
-        await inter.response.send_message(
-            f"Current rate: **1 {ENG_ICON} → {self.rate} {UNB_ICON}**.",
+    exchange = app_commands.Group(name="exchange", description="Engauge → UnbelievaBoat")
+
+    @exchange.command(name="rate", description="Show the current fixed rate")
+    async def exchange_rate(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"Current rate: **1 {ENG_ICON} → {self._rate} {UNB_ICON}**.",
             ephemeral=True
         )
 
-    @group.command(name="buy", description="Buy UnbelievaBoat using Engauge (opens a pop-up)")
-    async def buy(self, inter: discord.Interaction):
-        modal = BuyUnbModal(self, inter, self.rate)
-        await inter.response.send_modal(modal)
+    @exchange.command(name="buy", description="Buy UnbelievaBoat using Engauge (opens a pop-up)")
+    async def exchange_buy(self, interaction: discord.Interaction):
+        modal = BuyUnbModal(self, interaction, self._rate)
+        await interaction.response.send_modal(modal)
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ExchangeSimple(bot))
+    await bot.add_cog(Fun(bot))
