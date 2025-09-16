@@ -12,14 +12,13 @@ from discord.ext import commands
 from discord import app_commands
 from discord.app_commands import CheckFailure
 
+from utils import is_admin_or_manager
+
 # ============================ Config ============================
 
 CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
 if not CURRENCY_ICON:
     raise RuntimeError("CURRENCY_EMOJI must be set in your .env (e.g., <:CC:1234567890>)")
-
-# Role name for protected commands (admins always allowed)
-MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
 
 # Game tuning
 TICK_SECONDS = 1.0          # how often the multiplier updates while flying
@@ -61,21 +60,6 @@ class Engauge:
 
     async def credit(self, guild_id: int, user_id: int, amount: int):
         await self.adjust(guild_id, user_id, abs(int(amount)))
-
-
-# ============================ Permissions (role-name only) ============================
-
-def is_admin_or_manager():
-    async def predicate(inter: discord.Interaction) -> bool:
-        # admins always allowed
-        if inter.user.guild_permissions.administrator:
-            return True
-        # allow by role name
-        if isinstance(inter.user, discord.Member):
-            if any(r.name == MANAGER_ROLE_NAME for r in inter.user.roles):
-                return True
-        return False
-    return app_commands.check(predicate)
 
 
 # ============================ Round State (in-memory) ============================
@@ -148,16 +132,11 @@ class Crash(commands.Cog):
     async def on_app_command_error(self, interaction: discord.Interaction, error):
         if isinstance(error, CheckFailure):
             try:
+                msg = f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command."
                 if interaction.response.is_done():
-                    await interaction.followup.send(
-                        f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command.",
-                        ephemeral=True
-                    )
+                    await interaction.followup.send(msg, ephemeral=True)
                 else:
-                    await interaction.response.send_message(
-                        f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command.",
-                        ephemeral=True
-                    )
+                    await interaction.response.send_message(msg, ephemeral=True)
             except Exception:
                 pass
 

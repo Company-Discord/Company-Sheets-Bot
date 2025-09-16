@@ -86,7 +86,7 @@ async def setup_hook():
         print(f"Failed loading fun: {e}")
 
     try:
-        if(os.getenv("IS_DEV") != "True"):
+        if os.getenv("IS_DEV") != "True":
             await bot.load_extension("horse_race_engauge")     # or: "cogs.horse_race_engauge"
             print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
@@ -98,6 +98,13 @@ async def setup_hook():
         print("Loaded predictions cog ✅")
     except Exception as e:
         print(f"Failed loading predictions: {e}")
+
+    # ---- Load the Crash game extension ----
+    try:
+        await bot.load_extension("crash")                  # file: crash.py
+        print("Loaded crash cog ✅")
+    except Exception as e:
+        print(f"Failed loading crash: {e}")
 
 @bot.event
 async def on_ready():
