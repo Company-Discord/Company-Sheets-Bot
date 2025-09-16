@@ -1,0 +1,446 @@
+# crash.py — in-memory version (no DB), with Cash Out button
+import os
+import math
+import random
+import asyncio
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Tuple
+
+import aiohttp
+import discord
+from discord.ext import commands
+from discord import app_commands
+from discord.app_commands import CheckFailure
+
+# ============================ Config ============================
+
+CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
+if not CURRENCY_ICON:
+    raise RuntimeError("CURRENCY_EMOJI must be set in your .env (e.g., <:CC:1234567890>)")
+
+# Role name for protected commands (admins always allowed)
+MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
+
+# Game tuning
+TICK_SECONDS = 1.0          # how often the multiplier updates while flying
+GROWTH_PER_TICK = 0.06      # ~6% per second multiplier growth
+CRASH_MEAN = 2.0            # mean of Exp distribution added to 1.0 → avg crash ≈ 1 + 2.0 = 3.0×
+RNG = random.SystemRandom()
+
+# ============================ Engauge Adapter ============================
+
+class EngaugeError(Exception):
+    pass
+
+class InsufficientFunds(EngaugeError):
+    pass
+
+class Engauge:
+    """Server-scoped Engauge currency adjuster."""
+    def __init__(self):
+        self.base = "https://engau.ge/api/v1"
+        self.token = os.getenv("ENGAUGE_API_TOKEN") or os.getenv("ENGAUGE_TOKEN", "")
+        if not self.token:
+            raise RuntimeError("ENGAUGE_API_TOKEN or ENGAUGE_TOKEN must be set in your environment")
+
+    def _headers(self):
+        return {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+
+    async def adjust(self, guild_id: int, user_id: int, amount: int):
+        url = f"{self.base}/servers/{int(guild_id)}/members/{int(user_id)}/currency"
+        params = {"amount": str(int(amount))}
+        async with aiohttp.ClientSession() as s:
+            async with s.post(url, params=params, headers=self._headers()) as r:
+                if r.status == 402:
+                    raise InsufficientFunds("Insufficient Engauge balance")
+                if r.status >= 400:
+                    raise EngaugeError(f"HTTP {r.status}: {await r.text()}")
+
+    async def debit(self, guild_id: int, user_id: int, amount: int):
+        await self.adjust(guild_id, user_id, -abs(int(amount)))
+
+    async def credit(self, guild_id: int, user_id: int, amount: int):
+        await self.adjust(guild_id, user_id, abs(int(amount)))
+
+
+# ============================ Permissions (role-name only) ============================
+
+def is_admin_or_manager():
+    async def predicate(inter: discord.Interaction) -> bool:
+        # admins always allowed
+        if inter.user.guild_permissions.administrator:
+            return True
+        # allow by role name
+        if isinstance(inter.user, discord.Member):
+            if any(r.name == MANAGER_ROLE_NAME for r in inter.user.roles):
+                return True
+        return False
+    return app_commands.check(predicate)
+
+
+# ============================ Round State (in-memory) ============================
+
+@dataclass
+class Bet:
+    user_id: int
+    amount: int
+    auto_cashout: Optional[float] = None
+    cashed_out: bool = False
+    payout: int = 0
+
+@dataclass
+class RoundState:
+    status: str = "idle"   # idle | betting | flying | crashed | paid
+    open_until_ts: float = 0.0
+    started_ts: float = 0.0
+    crash_at_multiplier: float = 0.0
+    current_mult: float = 1.0
+    bets: Dict[int, Bet] = field(default_factory=dict)
+    guild_id: int = 0
+    channel_id: Optional[int] = None
+    message_id: Optional[int] = None
+    task: Optional[asyncio.Task] = None
+
+
+# ============================ Cash Out Button View ============================
+
+class CrashView(discord.ui.View):
+    def __init__(self, cog: "Crash", guild_id: int):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild_id = guild_id
+
+    @discord.ui.button(label="💸 Cash Out", style=discord.ButtonStyle.green)
+    async def cashout(self, inter: discord.Interaction, button: discord.ui.Button):
+        rs = self.cog._guild_round(self.guild_id)
+        if rs.status != "flying":
+            return await inter.response.send_message("❌ You can only cash out while flying.", ephemeral=True)
+
+        b = rs.bets.get(inter.user.id)
+        if not b or b.cashed_out:
+            return await inter.response.send_message("❌ You have no active bet to cash out.", ephemeral=True)
+
+        payout = int(math.floor(b.amount * rs.current_mult))
+        try:
+            await self.cog.eng.credit(self.guild_id, inter.user.id, payout)
+        except Exception as e:
+            return await inter.response.send_message(f"⚠️ Engauge error: {e}", ephemeral=True)
+
+        b.cashed_out = True
+        b.payout = payout
+        await inter.response.send_message(
+            f"✅ Cashed out at **{self.cog._format_mult(rs.current_mult)}** → {CURRENCY_ICON} {payout:,}",
+            ephemeral=True
+        )
+        await self.cog._refresh_embed(self.guild_id)
+
+
+# ============================ Cog ============================
+
+class Crash(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.eng = Engauge()
+        self.rounds: Dict[int, RoundState] = {}  # in-memory per-guild
+
+    # ---- Error message for failed checks (role/Admin) ----
+    @commands.Cog.listener()
+    async def on_app_command_error(self, interaction: discord.Interaction, error):
+        if isinstance(error, CheckFailure):
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(
+                        f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command.",
+                        ephemeral=True
+                    )
+            except Exception:
+                pass
+
+    # -------- Utilities --------
+
+    def _guild_round(self, guild_id: int) -> RoundState:
+        return self.rounds.setdefault(guild_id, RoundState(guild_id=guild_id))
+
+    def _format_mult(self, m: float) -> str:
+        return f"{m:.2f}×"
+
+    async def _get_channel_message(self, guild_id: int) -> Optional[Tuple[discord.TextChannel, discord.Message]]:
+        rs = self._guild_round(guild_id)
+        if not rs.channel_id or not rs.message_id:
+            return None
+        ch = self.bot.get_channel(rs.channel_id)
+        if not isinstance(ch, discord.TextChannel):
+            return None
+        try:
+            msg = await ch.fetch_message(rs.message_id)
+            return ch, msg
+        except Exception:
+            return None
+
+    async def _refresh_embed(self, guild_id: int, *, footer: Optional[str] = None):
+        rs = self._guild_round(guild_id)
+        chmsg = await self._get_channel_message(guild_id)
+        if not chmsg:
+            return
+        ch, msg = chmsg
+
+        pool = sum(b.amount for b in rs.bets.values() if not b.cashed_out)
+        winners_pool = sum(b.payout for b in rs.bets.values() if b.cashed_out)
+        a_count = sum(1 for b in rs.bets.values() if b.auto_cashout is not None)
+        bettors = len(rs.bets)
+
+        if rs.status == "betting":
+            countdown = f"<t:{int(rs.open_until_ts)}:R>"
+            top = f"**Status:** `BETTING`\n⏳ **Round starts** {countdown}\n🎯 **Current Mult:** {self._format_mult(1.00)}\n"
+        elif rs.status == "flying":
+            top = f"**Status:** `FLYING`\n🚀 **Current Mult:** **{self._format_mult(rs.current_mult)}**\n"
+        elif rs.status == "crashed":
+            top = f"**Status:** `CRASHED`\n💥 **Crashed at:** **{self._format_mult(rs.crash_at_multiplier)}**\n"
+        else:
+            top = f"**Status:** `{rs.status.upper()}`\n"
+
+        desc = (
+            f"{top}\n"
+            f"👥 **Bettors:** {bettors}\n"
+            f"💰 **Active Pool:** {CURRENCY_ICON} {pool:,}\n"
+            f"💸 **Paid so far:** {CURRENCY_ICON} {winners_pool:,}\n"
+            f"🧷 **Auto-cashout set:** {a_count}\n\n"
+            f"Use **/crash bet** during betting, and **/crash cashout** while flying."
+        )
+
+        emb = discord.Embed(
+            title="🎰 Crash — Cash out before it crashes!",
+            description=desc,
+            color=discord.Color.orange() if rs.status == "flying" else discord.Color.blurple()
+        )
+
+        if rs.bets:
+            lines = []
+            for uid, b in list(rs.bets.items())[:8]:
+                u = self.bot.get_user(uid)
+                name = u.name if u else str(uid)
+                status = "💰 cashed" if b.cashed_out else "⏳ live"
+                ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
+                val = b.payout if b.cashed_out else b.amount
+                lines.append(f"• **{name}** — {status}{ac} — {CURRENCY_ICON} {val:,}")
+            emb.add_field(name="Players", value="\n".join(lines), inline=False)
+
+        if footer:
+            emb.set_footer(text=footer)
+
+        view = CrashView(self, guild_id) if rs.status == "flying" else None
+        try:
+            await msg.edit(embed=emb, view=view)
+        except Exception:
+            pass
+
+    # -------- Game Loop --------
+
+    async def _run_round(self, guild_id: int):
+        rs = self._guild_round(guild_id)
+
+        # Wait out the betting window
+        await asyncio.sleep(max(0, int(rs.open_until_ts) - int(discord.utils.utcnow().timestamp())))
+
+        # If nobody bet, quietly end
+        if not rs.bets:
+            rs.status = "idle"
+            await self._refresh_embed(guild_id, footer="No bets placed; round not started.")
+            return
+
+        # Launch
+        rs.status = "flying"
+        rs.started_ts = int(discord.utils.utcnow().timestamp())
+        rs.current_mult = 1.0
+        rs.crash_at_multiplier = 1.0 + RNG.expovariate(1.0 / CRASH_MEAN)
+        await self._refresh_embed(guild_id)
+
+        # Fly until crash
+        while rs.current_mult < rs.crash_at_multiplier and rs.status == "flying":
+            rs.current_mult *= (1.0 + GROWTH_PER_TICK)
+            if rs.current_mult > 1000:  # safety clamp
+                rs.current_mult = 1000.0
+
+            # auto-cashouts
+            for uid, b in list(rs.bets.items()):
+                if not b.cashed_out and b.auto_cashout and rs.current_mult >= b.auto_cashout:
+                    payout = int(math.floor(b.amount * rs.current_mult))
+                    try:
+                        await self.eng.credit(guild_id, uid, payout)
+                        b.cashed_out = True
+                        b.payout = payout
+                    except Exception as e:
+                        print("auto cashout credit error:", e)
+
+            await self._refresh_embed(guild_id)
+            await asyncio.sleep(TICK_SECONDS)
+
+        # Crash
+        rs.status = "crashed"
+        rs.current_mult = rs.crash_at_multiplier
+        await self._refresh_embed(guild_id, footer="💥 The rocket crashed!")
+
+        # Settle & reset
+        await asyncio.sleep(2.0)
+        rs.status = "paid"
+        await self._refresh_embed(guild_id, footer="Round settled. Start a new one with /crash start")
+
+        await asyncio.sleep(3.0)
+        # Reset to idle; keep the message so new rounds reuse the same message thread
+        self.rounds[guild_id] = RoundState(guild_id=guild_id, channel_id=rs.channel_id, message_id=rs.message_id)
+
+    # -------- Commands --------
+
+    group = app_commands.Group(name="crash", description="Crash gambling game")
+
+    @group.command(name="start", description="Start a crash round (opens betting)")
+    @app_commands.describe(open_seconds="How long to accept bets before launch")
+    async def start(self, inter: discord.Interaction, open_seconds: app_commands.Range[int, 5, 120] = 20):
+        await inter.response.defer(ephemeral=True)
+        rs = self._guild_round(inter.guild_id)
+        if rs.status in ("betting", "flying"):
+            return await inter.followup.send("A round is already active in this server.", ephemeral=True)
+
+        now = int(discord.utils.utcnow().timestamp())
+        rs.status = "betting"
+        rs.open_until_ts = now + open_seconds
+        rs.channel_id = inter.channel_id
+        rs.message_id = None
+        rs.bets.clear()
+
+        # Announce
+        ch = inter.channel
+        if ch and isinstance(ch, discord.TextChannel):
+            embed = discord.Embed(
+                title="🎰 Crash — Cash out before it crashes!",
+                description=(
+                    f"**Status:** `BETTING`\n"
+                    f"⏳ **Round starts** <t:{rs.open_until_ts}:R>\n"
+                    f"🎯 **Current Mult:** 1.00×\n\n"
+                    f"Place a bet with **/crash bet** (optional `auto_cashout`).\n"
+                    f"Cash out with **/crash cashout** during flight!\n\n"
+                    f"💡 Tip: a green **Cash Out** button will appear when the rocket is flying."
+                ),
+                color=discord.Color.blurple(),
+            )
+            msg = await ch.send(embed=embed)
+            rs.message_id = msg.id
+
+        # Spin loop
+        if rs.task and not rs.task.done():
+            rs.task.cancel()
+        rs.task = asyncio.create_task(self._run_round(inter.guild_id))
+
+        await inter.followup.send(f"Crash round opened for **{open_seconds}s**. Bets are live!", ephemeral=True)
+
+    @group.command(name="bet", description="Place a bet (optionally set auto-cashout)")
+    @app_commands.describe(
+        amount="Amount of currency to bet (integer)",
+        auto_cashout="Auto-cashout at this multiplier (e.g., 1.50). Leave empty to cash manually."
+    )
+    async def bet(
+        self,
+        inter: discord.Interaction,
+        amount: app_commands.Range[int, 1, 10_000_000],
+        auto_cashout: Optional[app_commands.Range[float, 1.01, 1000.0]] = None
+    ):
+        await inter.response.defer(ephemeral=True)
+        rs = self._guild_round(inter.guild_id)
+        if rs.status != "betting":
+            return await inter.followup.send("Betting is closed. Wait for the next round.", ephemeral=True)
+
+        # single active bet (rebuy replaces: refund old → debit new)
+        existing = rs.bets.get(inter.user.id)
+        try:
+            if existing:
+                await self.eng.credit(inter.guild_id, inter.user.id, existing.amount)  # refund old
+            await self.eng.debit(inter.guild_id, inter.user.id, amount)               # charge new
+        except InsufficientFunds:
+            return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
+        except Exception as e:
+            return await inter.followup.send(f"Engauge error: {e}", ephemeral=True)
+
+        rs.bets[inter.user.id] = Bet(
+            user_id=inter.user.id,
+            amount=int(amount),
+            auto_cashout=float(auto_cashout) if auto_cashout else None
+        )
+
+        ac_txt = f" with auto-cashout at **{auto_cashout:.2f}×**" if auto_cashout else ""
+        await inter.followup.send(
+            f"Bet placed for **{CURRENCY_ICON} {amount:,}**{ac_txt}. Good luck! 🚀",
+            ephemeral=True
+        )
+        await self._refresh_embed(inter.guild_id)
+
+    @group.command(name="cashout", description="Cash out your active bet (during flight)")
+    async def cashout(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        rs = self._guild_round(inter.guild_id)
+        if rs.status != "flying":
+            return await inter.followup.send("You can only cash out while the rocket is flying.", ephemeral=True)
+
+        b = rs.bets.get(inter.user.id)
+        if not b or b.cashed_out:
+            return await inter.followup.send("You have no active bet to cash out.", ephemeral=True)
+
+        payout = int(math.floor(b.amount * rs.current_mult))
+        try:
+            await self.eng.credit(inter.guild_id, inter.user.id, payout)
+        except Exception as e:
+            return await inter.followup.send(f"Engauge error while paying out: {e}", ephemeral=True)
+
+        b.cashed_out = True
+        b.payout = payout
+        await inter.followup.send(
+            f"✅ Cashed out at **{self._format_mult(rs.current_mult)}** → {CURRENCY_ICON} {payout:,}",
+            ephemeral=True
+        )
+        await self._refresh_embed(inter.guild_id)
+
+    @group.command(name="cancel", description="Cancel current crash round and refund live stakes")
+    @is_admin_or_manager()
+    async def cancel(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        rs = self._guild_round(inter.guild_id)
+        if rs.status not in ("betting", "flying"):
+            return await inter.followup.send("No cancellable round right now.", ephemeral=True)
+
+        # refund only those not cashed out
+        for uid, b in list(rs.bets.items()):
+            if not b.cashed_out and b.amount > 0:
+                try:
+                    await self.eng.credit(inter.guild_id, uid, b.amount)
+                except Exception as e:
+                    print("refund error:", e)
+
+        # reset state
+        self.rounds[guild_id] = RoundState(guild_id=inter.guild_id)
+        await inter.followup.send("Round canceled. Refunds sent.", ephemeral=True)
+        chmsg = await self._get_channel_message(inter.guild_id)
+        if chmsg:
+            ch, _ = chmsg
+            await ch.send("❌ Crash round canceled — all active stakes refunded.")
+
+    @group.command(name="status", description="Show current crash round status")
+    async def status(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        rs = self._guild_round(inter.guild_id)
+        if rs.status == "idle":
+            return await inter.followup.send("No active crash round. Start one with **/crash start**.", ephemeral=True)
+        await self._refresh_embed(inter.guild_id)
+        chmsg = await self._get_channel_message(inter.guild_id)
+        if chmsg:
+            _, msg = chmsg
+            await inter.followup.send(f"Showing the latest status here: {msg.jump_url}", ephemeral=True)
+        else:
+            await inter.followup.send("Status refreshed.", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Crash(bot))
