@@ -1,4 +1,4 @@
-# crash.py — in-memory version (no DB), with Cash Out button
+# crash.py — in-memory, Cash Out button, Mixture risk (Option B)
 import os
 import math
 import random
@@ -12,7 +12,8 @@ from discord.ext import commands
 from discord import app_commands
 from discord.app_commands import CheckFailure
 
-from utils import is_admin_or_manager
+# Use your shared role check
+from utils import is_admin_or_manager, MANAGER_ROLE_NAME
 
 # ============================ Config ============================
 
@@ -21,10 +22,20 @@ if not CURRENCY_ICON:
     raise RuntimeError("CURRENCY_EMOJI must be set in your .env (e.g., <:CC:1234567890>)")
 
 # Game tuning
-TICK_SECONDS = 1.0          # how often the multiplier updates while flying
-GROWTH_PER_TICK = 0.06      # ~6% per second multiplier growth
-CRASH_MEAN = 2.0            # mean of Exp distribution added to 1.0 → avg crash ≈ 1 + 2.0 = 3.0×
+TICK_SECONDS = 1.0            # embed update frequency while flying
+GROWTH_PER_TICK = 0.08        # was 0.06 → faster climbs for more intensity
+
+RISK_MIX_P_HARSH = 0.75       
+MEAN_HARSH = 0.5              
+MEAN_LUCKY = 2.0              
 RNG = random.SystemRandom()
+
+def draw_crash_multiplier() -> float:
+    """Harsh vs Lucky round: 1 + Exp(mean) with mixture probabilities."""
+    if RNG.random() < RISK_MIX_P_HARSH:
+        return 1.0 + RNG.expovariate(1.0 / MEAN_HARSH)
+    else:
+        return 1.0 + RNG.expovariate(1.0 / MEAN_LUCKY)
 
 # ============================ Engauge Adapter ============================
 
@@ -127,7 +138,7 @@ class Crash(commands.Cog):
         self.eng = Engauge()
         self.rounds: Dict[int, RoundState] = {}  # in-memory per-guild
 
-    # ---- Error message for failed checks (role/Admin) ----
+    # ---- Clear message for failed permission checks ----
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error):
         if isinstance(error, CheckFailure):
@@ -175,7 +186,7 @@ class Crash(commands.Cog):
 
         if rs.status == "betting":
             countdown = f"<t:{int(rs.open_until_ts)}:R>"
-            top = f"**Status:** `BETTING`\n⏳ **Round starts** {countdown}\n🎯 **Current Mult:** {self._format_mult(1.00)}\n"
+            top = f"**Status:** `BETTING`\n⏳ **Round starts** {countdown}\n🎯 **Current Mult:** 1.00×\n"
         elif rs.status == "flying":
             top = f"**Status:** `FLYING`\n🚀 **Current Mult:** **{self._format_mult(rs.current_mult)}**\n"
         elif rs.status == "crashed":
@@ -193,7 +204,7 @@ class Crash(commands.Cog):
         )
 
         emb = discord.Embed(
-            title="🎰 Crash — Cash out before it crashes!",
+            title="🎰 Crash — High Risk · High Reward",
             description=desc,
             color=discord.Color.orange() if rs.status == "flying" else discord.Color.blurple()
         )
@@ -236,11 +247,12 @@ class Crash(commands.Cog):
         rs.status = "flying"
         rs.started_ts = int(discord.utils.utcnow().timestamp())
         rs.current_mult = 1.0
-        rs.crash_at_multiplier = 1.0 + RNG.expovariate(1.0 / CRASH_MEAN)
+        rs.crash_at_multiplier = draw_crash_multiplier()   # << Mixture risk draw
         await self._refresh_embed(guild_id)
 
         # Fly until crash
         while rs.current_mult < rs.crash_at_multiplier and rs.status == "flying":
+            # Faster climbs for drama
             rs.current_mult *= (1.0 + GROWTH_PER_TICK)
             if rs.current_mult > 1000:  # safety clamp
                 rs.current_mult = 1000.0
@@ -270,7 +282,7 @@ class Crash(commands.Cog):
         await self._refresh_embed(guild_id, footer="Round settled. Start a new one with /crash start")
 
         await asyncio.sleep(3.0)
-        # Reset to idle; keep the message so new rounds reuse the same message thread
+        # Reset to idle; keep the message hook so new rounds reuse same thread
         self.rounds[guild_id] = RoundState(guild_id=guild_id, channel_id=rs.channel_id, message_id=rs.message_id)
 
     # -------- Commands --------
@@ -296,7 +308,7 @@ class Crash(commands.Cog):
         ch = inter.channel
         if ch and isinstance(ch, discord.TextChannel):
             embed = discord.Embed(
-                title="🎰 Crash — Cash out before it crashes!",
+                title="🎰 Crash — High Risk · High Reward",
                 description=(
                     f"**Status:** `BETTING`\n"
                     f"⏳ **Round starts** <t:{rs.open_until_ts}:R>\n"
