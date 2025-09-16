@@ -63,6 +63,14 @@ class Predictions(commands.Cog):
         self.bot = bot
         self.db = None
         self._lock_task.start()
+                # Set all commands in this cog to be guild-specific
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            print(f"[Predictions] Setting guild-specific commands for {guild_id}")
+            guild_obj = discord.Object(id=int(guild_id))
+            for command in self.__cog_app_commands__:
+                command.guild = guild_obj
+                print(f"[Predictions] Assigned guild to command: {command.name}")
 
     def cog_unload(self):
         self._lock_task.cancel()
@@ -87,7 +95,9 @@ class Predictions(commands.Cog):
                 created_by INTEGER,
                 created_ts INTEGER,
                 lock_ts INTEGER,
-                announce_channel_id INTEGER
+                announce_channel_id INTEGER,
+                embed_message_id INTEGER,
+                winner TEXT
             );
 
             CREATE TABLE IF NOT EXISTS bets (
@@ -99,6 +109,21 @@ class Predictions(commands.Cog):
             );
             """
         )
+        # Add embed_message_id column if it doesn't exist (for existing databases)
+        try:
+            await self.db.execute("ALTER TABLE predictions ADD COLUMN embed_message_id INTEGER")
+            await self.db.commit()
+        except Exception:
+            # Column already exists, ignore
+            pass
+        
+        # Add winner column if it doesn't exist (for existing databases)
+        try:
+            await self.db.execute("ALTER TABLE predictions ADD COLUMN winner TEXT")
+            await self.db.commit()
+        except Exception:
+            # Column already exists, ignore
+            pass
         await self.db.commit()
 
     def now(self) -> int:
@@ -106,6 +131,47 @@ class Predictions(commands.Cog):
 
     def fmt_amt(self, amt: int) -> str:
         return f"{CURRENCY_ICON} {amt:,}"
+
+    async def update_embed(self, guild_id: int, content: str = None):
+        """Update the existing prediction embed if it exists, otherwise send a new one"""
+        pred = await self.current_pred(guild_id)
+        if not pred:
+            return
+        
+        embed = await self.make_embed(guild_id)
+        if not embed:
+            return
+            
+        # Try to edit existing message
+        if pred["embed_message_id"] and pred["announce_channel_id"]:
+            try:
+                channel = self.bot.get_channel(pred["announce_channel_id"])
+                if channel:
+                    message = await channel.fetch_message(pred["embed_message_id"])
+                    if content:
+                        await message.edit(content=content, embed=embed)
+                    else:
+                        await message.edit(embed=embed)
+                    return
+            except (discord.NotFound, discord.HTTPException):
+                # Message was deleted or other error, fall back to sending new message
+                pass
+        
+        # Fallback: send new message and update stored ID
+        if pred["announce_channel_id"]:
+            channel = self.bot.get_channel(pred["announce_channel_id"])
+            if channel:
+                if content:
+                    message = await channel.send(content=content, embed=embed)
+                else:
+                    message = await channel.send(embed=embed)
+                # Update stored message ID
+                db = await self.get_db()
+                await db.execute(
+                    "UPDATE predictions SET embed_message_id=? WHERE guild_id=?",
+                    (message.id, guild_id)
+                )
+                await db.commit()
 
     async def current_pred(self, guild_id: int):
         db = await self.get_db()
@@ -179,9 +245,9 @@ class Predictions(commands.Cog):
         lock_ts = self.now() + open_minutes * 60
         await db.execute(
             """REPLACE INTO predictions
-            (guild_id,title,outcome_a,outcome_b,status,created_by,created_ts,lock_ts,announce_channel_id)
-            VALUES (?,?,?,?, 'open', ?, ?, ?, ?)""",
-            (inter.guild_id, title, outcome_a, outcome_b, inter.user.id, self.now(), lock_ts, inter.channel_id),
+            (guild_id,title,outcome_a,outcome_b,status,created_by,created_ts,lock_ts,announce_channel_id,embed_message_id,winner)
+            VALUES (?,?,?,?, 'open', ?, ?, ?, ?, ?, ?)""",
+            (inter.guild_id, title, outcome_a, outcome_b, inter.user.id, self.now(), lock_ts, inter.channel_id, None, None),
         )
         await db.execute("DELETE FROM bets WHERE guild_id=?", (inter.guild_id,))
         await db.commit()
@@ -189,7 +255,14 @@ class Predictions(commands.Cog):
         await inter.followup.send(f"Prediction started: **{title}**", ephemeral=True)
         channel = inter.channel
         if channel:
-            await channel.send(embed=await self.make_embed(inter.guild_id))
+            embed = await self.make_embed(inter.guild_id)
+            message = await channel.send(embed=embed)
+            # Store the message ID for future edits
+            await db.execute(
+                "UPDATE predictions SET embed_message_id=? WHERE guild_id=?", 
+                (message.id, inter.guild_id)
+            )
+            await db.commit()
 
     @app_commands.command(name="pred_bet", description="Place a bet on the current prediction")
     async def bet(self, inter: discord.Interaction, side: str, amount: int):
@@ -231,9 +304,8 @@ class Predictions(commands.Cog):
         )
         await db.commit()
 
-        channel = inter.channel
-        if channel:
-            await channel.send(embed=await self.make_embed(inter.guild_id))
+        # Update the existing embed instead of sending a new one
+        await self.update_embed(inter.guild_id)
 
     @app_commands.command(name="pred_resolve", description="(Admin) Resolve and pay out a prediction")
     @app_commands.default_permissions(administrator=True)
@@ -266,13 +338,12 @@ class Predictions(commands.Cog):
             msg = f"# 🏆 Payouts sent to Outcome {winner} backers!"
 
         db = await self.get_db()
-        await db.execute("UPDATE predictions SET status='resolved' WHERE guild_id=?", (inter.guild_id,))
+        await db.execute("UPDATE predictions SET status='resolved', winner=? WHERE guild_id=?", (winner, inter.guild_id))
         await db.commit()
 
         await inter.followup.send("Resolved.", ephemeral=True)
-        channel = inter.channel
-        if channel:
-            await channel.send(msg, embed=await self.make_embed(inter.guild_id))
+        # Update the existing embed with the resolution message
+        await self.update_embed(inter.guild_id, content=msg)
 
     @app_commands.command(name="pred_cancel", description="(Admin) Cancel the current prediction and refund all")
     @app_commands.default_permissions(administrator=True)
@@ -288,9 +359,8 @@ class Predictions(commands.Cog):
         await db.commit()
 
         await inter.followup.send("Canceled and refunded.", ephemeral=True)
-        channel = inter.channel
-        if channel:
-            await channel.send("Prediction canceled and refunded.", embed=await self.make_embed(inter.guild_id))
+        # Update the existing embed with the cancellation message
+        await self.update_embed(inter.guild_id, content="Prediction canceled and refunded.")
 
     @app_commands.command(name="pred_status", description="Show the current prediction status")
     async def status(self, inter: discord.Interaction):
@@ -324,30 +394,79 @@ class Predictions(commands.Cog):
         rel = f"<t:{lock_ts}:R>"
         abs_t = f"<t:{lock_ts}:t>"
 
-        e = discord.Embed(
-            title="🔮 Prediction",
-            description=(
+        # Prepare outcome text with winner highlighting
+        outcome_a_text = p['outcome_a']
+        outcome_b_text = p['outcome_b']
+        
+        # Safely get winner (might not exist in older database records)
+        winner = None
+        try:
+            winner = p['winner']
+        except (KeyError, IndexError):
+            pass
+            
+        if p['status'] == 'resolved' and winner:
+            if winner == 'A':
+                outcome_a_text = f"🏆 **{p['outcome_a']}** 🏆"
+            elif winner == 'B':
+                outcome_b_text = f"🏆 **{p['outcome_b']}** 🏆"
+
+        # Different description based on status
+        if p['status'] == 'resolved':
+            description = (
+                f"**{p['title']}**\n"
+                f"**Status:** `{p['status'].upper()}`\n\n"
+                f"**A)** {outcome_a_text}\n"
+                f"**B)** {outcome_b_text}\n"
+            )
+        else:
+            description = (
                 f"**{p['title']}**\n"
                 f"**Status:** `{p['status'].upper()}`\n"
                 f"⏳ **Time left:** {rel}  (locks at {abs_t})\n\n"
-                f"**A)** {p['outcome_a']}\n"
-                f"**B)** {p['outcome_b']}\n\n"
+                f"**A)** {outcome_a_text}\n"
+                f"**B)** {outcome_b_text}\n\n"
                 f"⚠️ Auto-cancels at lock if fewer than {MIN_UNIQUE_BETTORS} unique participants.\n"
                 f"➡️ Use `/pred_bet` to place your bets!"
-            ),
-            color=discord.Color.blurple(),
+            )
+
+        e = discord.Embed(
+            title="🔮 Prediction",
+            description=description,
+            color=discord.Color.gold() if p['status'] == 'resolved' else discord.Color.blurple(),
         )
 
-        e.add_field(name="Pool A", value=self.fmt_amt(pool_a), inline=True)
-        e.add_field(name="Pool B", value=self.fmt_amt(pool_b), inline=True)
-        e.add_field(
-            name="Current Odds",
-            value=(
-                f"**A)** {mult(pool_a)} · {pct(a_count, total_bettors)} of bettors ({a_count}/{total_bettors})\n"
-                f"**B)** {mult(pool_b)} · {pct(b_count, total_bettors)} of bettors ({b_count}/{total_bettors})"
-            ),
-            inline=False
-        )
+        # Highlight winning pool if resolved
+        pool_a_name = "Pool A"
+        pool_b_name = "Pool B"
+        if p['status'] == 'resolved' and winner:
+            if winner == 'A':
+                pool_a_name = "🏆 Pool A (Winner)"
+            elif winner == 'B':
+                pool_b_name = "🏆 Pool B (Winner)"
+
+        e.add_field(name=pool_a_name, value=self.fmt_amt(pool_a), inline=True)
+        e.add_field(name=pool_b_name, value=self.fmt_amt(pool_b), inline=True)
+        
+        # Different odds display for resolved vs active predictions
+        if p['status'] == 'resolved':
+            e.add_field(
+                name="Final Results",
+                value=(
+                    f"**A)** {mult(pool_a)} · {pct(a_count, total_bettors)} of bettors ({a_count}/{total_bettors})\n"
+                    f"**B)** {mult(pool_b)} · {pct(b_count, total_bettors)} of bettors ({b_count}/{total_bettors})"
+                ),
+                inline=False
+            )
+        else:
+            e.add_field(
+                name="Current Odds",
+                value=(
+                    f"**A)** {mult(pool_a)} · {pct(a_count, total_bettors)} of bettors ({a_count}/{total_bettors})\n"
+                    f"**B)** {mult(pool_b)} · {pct(b_count, total_bettors)} of bettors ({b_count}/{total_bettors})"
+                ),
+                inline=False
+            )
         return e
 
     # ---------- Background task ----------
@@ -372,21 +491,15 @@ class Predictions(commands.Cog):
                 await db.execute("UPDATE predictions SET status='canceled' WHERE guild_id=?", (gid,))
                 await db.commit()
 
-                if channel:
-                    await channel.send(f"❌ Prediction auto-canceled — fewer than {MIN_UNIQUE_BETTORS} participants.")
-                elif guild and guild.system_channel:
-                    await guild.system_channel.send(
-                        f"❌ Prediction auto-canceled — fewer than {MIN_UNIQUE_BETTORS} participants."
-                    )
+                # Update the existing embed with auto-cancel message
+                await self.update_embed(gid, content=f"❌ Prediction auto-canceled — fewer than {MIN_UNIQUE_BETTORS} participants.")
                 continue
 
             # otherwise lock
             await db.execute("UPDATE predictions SET status='locked' WHERE guild_id=?", (gid,))
             await db.commit()
-            if channel:
-                await channel.send("🔒 Betting is now locked.")
-            elif guild and guild.system_channel:
-                await guild.system_channel.send("🔒 Betting is now locked.")
+            # Update the existing embed with lock message
+            await self.update_embed(gid, content="🔒 Betting is now locked.")
 
     @_lock_task.before_loop
     async def before_lock(self):
