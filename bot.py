@@ -105,6 +105,12 @@ async def setup_hook():
         print("Loaded crash cog ✅")
     except Exception as e:
         print(f"Failed loading crash: {e}")
+    # ---- Load Lottery extension ----
+    try:
+        await bot.load_extension("lottery_daily")   # file: lottery_daily.py
+        print("Loaded lottery_daily cog ✅")
+    except Exception as e:
+        print(f"Failed loading lottery_daily: {e}")
 
 @bot.event
 async def on_ready():
