@@ -1,10 +1,4 @@
-# Hey Phil, I'm adding comments at the top to remember the original settings. 
-# lottery_daily.py — Daily SQLite Lottery (UnbelievaBoat)
-# - Opens daily at 11:00 AM America/New_York, lasts 24h
-# - Top 2 winners (70/30) on settle
-# - +BONUS per ticket added to pot
-# - "House" no-winner mechanic: for every 4 tickets purchased, 1 extra house ticket is added.
-#   The bot first draws vs the house. If house wins, NO WINNER → entire pot rolls to tomorrow.
+# lottery_daily.py — Daily Lottery (UnbelievaBoat) with configurable House ratio
 import os
 import math
 import time
@@ -20,17 +14,19 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
-# =================== Config (env) ===================
+# =================== Display / Config (env) ===================
 UNB_ICON = os.getenv("CURRENCY_EMOTE", "💵")
-
 DB_PATH = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
 
 DEFAULT_TICKET_PRICE = int(os.getenv("LOTTERY_TICKET_PRICE", "100000"))        # 100k
-DEFAULT_BONUS_PER_TICKET = int(os.getenv("LOTTERY_BONUS_PER_TICKET", "50000")) # +50k per ticket
+DEFAULT_BONUS_PER_TICKET = int(os.getenv("LOTTERY_BONUS_PER_TICKET", "100000")) # +100k per ticket
 DEFAULT_MIN_PARTICIPANTS = int(os.getenv("LOTTERY_MIN_PARTICIPANTS", "3"))
 DEFAULT_SPLIT_FIRST_BPS = int(os.getenv("LOTTERY_SPLIT_FIRST_BPS", "7000"))    # 7000 = 70%
 
-# Fixed open/close time each day
+# House odds: player:house weights. Example "4:1" (~20% house), "1:3" (~75% house; ~25% player day)
+HOUSE_RATIO_STR = os.getenv("LOTTERY_HOUSE_RATIO", "")
+
+# Fixed open/close time each day: 11:00 AM America/New_York
 DAILY_TZ = ZoneInfo("America/New_York")
 DAILY_HOUR = 11
 DAILY_MINUTE = 0
@@ -45,6 +41,8 @@ class UnbelievaBoat:
         self.token = os.getenv("UNBELIEVABOAT_TOKEN")
         if not self.token:
             raise RuntimeError("Set UNBELIEVABOAT_TOKEN")
+        # default: DO NOT allow negative balances
+        self.allow_negative = os.getenv("UNB_ALLOW_NEGATIVE", "0") in ("1", "true", "True", "yes")
 
     def _headers(self):
         return {
@@ -53,23 +51,55 @@ class UnbelievaBoat:
             "Content-Type": "application/json",
         }
 
-    async def patch_cash(self, guild_id: int, user_id: int, delta: int, reason: str):
+    async def get_user(self, guild_id: int, user_id: int) -> dict:
+        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, headers=self._headers()) as r:
+                if r.status >= 400:
+                    raise UnbError(f"UNB HTTP {r.status}: {await r.text()}")
+                return await r.json()
+
+    async def get_cash(self, guild_id: int, user_id: int) -> int:
+        data = await self.get_user(guild_id, user_id)
+        return int(data.get("cash", 0))
+
+    async def patch_cash(self, guild_id: int, user_id: int, delta: int, reason: str) -> dict:
         url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
         payload = {"cash": int(delta), "reason": reason}
         async with aiohttp.ClientSession() as s:
             async with s.patch(url, json=payload, headers=self._headers()) as r:
+                txt = await r.text()
                 if r.status >= 400:
                     try:
                         data = await r.json()
                         msg = str(data)
                     except Exception:
-                        msg = await r.text()
+                        msg = txt
                     if "insufficient" in msg.lower():
                         raise InsufficientFunds(msg)
                     raise UnbError(f"UNB HTTP {r.status}: {msg}")
+                try:
+                    return await r.json()
+                except Exception:
+                    return {}
 
     async def debit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        await self.patch_cash(guild_id, user_id, -abs(int(amount)), reason)
+        """Debit and enforce non-negative balance unless allow_negative is true."""
+        amount = abs(int(amount))
+        if not self.allow_negative:
+            bal = await self.get_cash(guild_id, user_id)
+            if bal < amount:
+                raise InsufficientFunds(f"Need {amount} but have {bal}")
+        data = await self.patch_cash(guild_id, user_id, -amount, reason)
+        if not self.allow_negative:
+            # Post-debit guard (race protection)
+            try:
+                new_cash = int(data.get("cash"))
+            except Exception:
+                new_cash = await self.get_cash(guild_id, user_id)
+            if new_cash < 0:
+                await self.patch_cash(guild_id, user_id, amount, "Revert debit: insufficient funds")
+                raise InsufficientFunds("Balance would go negative; purchase cancelled.")
 
     async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
         await self.patch_cash(guild_id, user_id, abs(int(amount)), reason)
@@ -118,17 +148,13 @@ CREATE TABLE IF NOT EXISTS rollover_bank (
 );
 """
 
+# =================== Helpers ===================
 def now_i() -> int:
     return int(time.time())
 
 def weighted_draw_two(entries: List[Tuple[int, int]]) -> Tuple[int, Optional[int]]:
-    """
-    entries: list of (user_id, qty) with qty>0
-    Returns (winner1, winner2 or None)
-    """
     total = sum(q for _, q in entries)
     rng = random.SystemRandom()
-
     # winner 1
     r1 = rng.randrange(1, total + 1)
     cum = 0
@@ -138,13 +164,11 @@ def weighted_draw_two(entries: List[Tuple[int, int]]) -> Tuple[int, Optional[int
         if r1 <= cum:
             w1 = uid
             break
-
-    # winner 2 (without replacement)
+    # winner 2 without replacement
     entries2 = [(uid, qty) for uid, qty in entries if uid != w1]
     total2 = sum(q for _, q in entries2)
     if total2 <= 0:
         return (w1, None)
-
     r2 = rng.randrange(1, total2 + 1)
     cum = 0
     w2 = None
@@ -155,11 +179,25 @@ def weighted_draw_two(entries: List[Tuple[int, int]]) -> Tuple[int, Optional[int
             break
     return (w1, w2)
 
-def today_11am_et(ts: Optional[int] = None) -> int:
-    dt = datetime.now(DAILY_TZ) if ts is None else datetime.fromtimestamp(ts, DAILY_TZ)
-    dt = dt.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
-    return int(dt.timestamp())
+# House ratio parsing
+def _parse_house_ratio(s: str) -> tuple[int, int]:
+    try:
+        p, h = s.split(":")
+        p = max(1, int(p.strip()))
+        h = max(0, int(h.strip()))
+        return (p, h)
+    except Exception:
+        return (4, 1)  # safe default
 
+HOUSE_PLAYER_W, HOUSE_HOUSE_W = _parse_house_ratio(HOUSE_RATIO_STR)
+
+def _house_tickets_for(qty: int) -> int:
+    """How many house tickets to add given qty player tickets, based on player:house ratio."""
+    if qty <= 0 or HOUSE_HOUSE_W <= 0:
+        return 0
+    return math.floor(qty * (HOUSE_HOUSE_W / HOUSE_PLAYER_W))
+
+# Daily window helpers
 def next_11am_et(after_ts: Optional[int] = None) -> int:
     base = datetime.now(DAILY_TZ) if after_ts is None else datetime.fromtimestamp(after_ts, DAILY_TZ)
     candidate = base.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
@@ -167,6 +205,7 @@ def next_11am_et(after_ts: Optional[int] = None) -> int:
         candidate = candidate + timedelta(days=1)
     return int(candidate.timestamp())
 
+# =================== Cog ===================
 class LotteryDaily(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -199,7 +238,7 @@ class LotteryDaily(commands.Cog):
             self._locks[guild_id] = L
         return L
 
-    # ---------------- Background: close/draw at end of window ----------------
+    # ---------- Background: auto-close at end of window ----------
     @tasks.loop(seconds=60)
     async def sweeper(self):
         try:
@@ -221,11 +260,11 @@ class LotteryDaily(commands.Cog):
     async def before_sweeper(self):
         await self.bot.wait_until_ready()
 
-    # ---------------- Background: open a new round at 11:00 ET ----------------
+    # ---------- Background: auto-open at 11:00 ET ----------
     @tasks.loop(seconds=60)
     async def opener(self):
         try:
-            db = await self._get_db()
+            await self._get_db()
             for g in list(self.bot.guilds):
                 gid = g.id
                 async with self._lock(gid):
@@ -233,15 +272,13 @@ class LotteryDaily(commands.Cog):
                     now = now_i()
                     if row and now < int(row["close_ts"]):
                         continue
-                    open_ts = next_11am_et(now - 3600)  # last 11AM candidate
-                    if now >= open_ts + 24*3600:
-                        open_ts = next_11am_et(now - 24*3600)
+                    open_ts = next_11am_et(now - 3600)
                     if now < open_ts:
                         continue
                     close_ts = open_ts + 24*3600
                     ch_id = await self._last_channel_or_none(gid)
                     if ch_id is None:
-                        continue
+                        continue  # will open automatically after admin sets channel once
                     await self._open_new_round(gid, ch_id, open_ts, close_ts, auto=True)
         except Exception as e:
             print("lottery opener error:", e)
@@ -250,7 +287,7 @@ class LotteryDaily(commands.Cog):
     async def before_opener(self):
         await self.bot.wait_until_ready()
 
-    # ---------------- Helpers ----------------
+    # ---------- DB helpers ----------
     async def _last_channel_or_none(self, guild_id: int) -> Optional[int]:
         db = await self._get_db()
         row = await (await db.execute(
@@ -258,6 +295,27 @@ class LotteryDaily(commands.Cog):
             (guild_id,)
         )).fetchone()
         return int(row["announce_channel_id"]) if row else None
+
+    async def _current_open(self, guild_id: int) -> Optional[aiosqlite.Row]:
+        db = await self._get_db()
+        return await (await db.execute(
+            "SELECT * FROM lotteries WHERE guild_id=? AND status='open' ORDER BY id DESC LIMIT 1",
+            (guild_id,)
+        )).fetchone()
+
+    async def _pot_components(self, lottery_id: int) -> Tuple[int, int, int]:
+        db = await self._get_db()
+        lot = await (await db.execute("SELECT * FROM lotteries WHERE id=?", (lottery_id,))).fetchone()
+        if not lot:
+            return (0, 0, 0)
+        row = await (await db.execute(
+            "SELECT COALESCE(SUM(quantity),0) q, COALESCE(SUM(amount_paid),0) p FROM tickets WHERE lottery_id=?",
+            (lottery_id,)
+        )).fetchone()
+        qty = int(row["q"])
+        paid = int(row["p"])
+        bonus = qty * int(lot["bonus_per_ticket"])
+        return (qty, paid, bonus)
 
     async def _bank_get(self, guild_id: int) -> int:
         db = await self._get_db()
@@ -305,32 +363,12 @@ class LotteryDaily(commands.Cog):
                 f"🎟️ **Daily Lottery is OPEN!** {'(auto)' if auto else ''}\n"
                 f"• Ticket: {UNB_ICON} **{tp:,}**  • Bonus: +{UNB_ICON} **{bonus:,}** / ticket\n"
                 f"• Seed (rollover): {UNB_ICON} **{seed:,}**\n"
-                f"• Winners on settle: 🥇 {split_bps/100:.2f}% / 🥈 {100 - split_bps/100:.2f}%\n"
-                f"• **House rule:** for every 4 tickets, 1 house ticket is added. If house wins the draw, **no winner** and the pot rolls to tomorrow.\n"
+                f"• Winners if player day: 🥇 {split_bps/100:.2f}% / 🥈 {100 - split_bps/100:.2f}%\n"
+                f"• **House rule:** ratio **{HOUSE_PLAYER_W}:{HOUSE_HOUSE_W}** (player:house). "
+                f"If House wins the draw, **no winner** and the pot rolls to tomorrow.\n"
                 f"• Closes: <t:{close_ts}:R>  (resets daily at **11:00 AM ET**)\n\n"
                 f"Buy with `/lottery buy quantity:<n>` • Check `/lottery status`"
             )
-
-    async def _current_open(self, guild_id: int) -> Optional[aiosqlite.Row]:
-        db = await self._get_db()
-        return await (await db.execute(
-            "SELECT * FROM lotteries WHERE guild_id=? AND status='open' ORDER BY id DESC LIMIT 1",
-            (guild_id,)
-        )).fetchone()
-
-    async def _pot_components(self, lottery_id: int) -> Tuple[int, int, int]:
-        db = await self._get_db()
-        lot = await (await db.execute("SELECT * FROM lotteries WHERE id=?", (lottery_id,))).fetchone()
-        if not lot:
-            return (0, 0, 0)
-        row = await (await db.execute(
-            "SELECT COALESCE(SUM(quantity),0) q, COALESCE(SUM(amount_paid),0) p FROM tickets WHERE lottery_id=?",
-            (lottery_id,)
-        )).fetchone()
-        qty = int(row["q"])
-        paid = int(row["p"])
-        bonus = qty * int(lot["bonus_per_ticket"])
-        return (qty, paid, bonus)
 
     async def _refund_all(self, guild_id: int, lottery_id: int, reason: str):
         db = await self._get_db()
@@ -362,7 +400,7 @@ class LotteryDaily(commands.Cog):
         seed = int(lot["seed_amount"])
         total_pot = seed + gross_paid + bonus
 
-        # Unique participants (for your minimum rule; still enforced)
+        # participants threshold
         row = await (await db.execute(
             "SELECT COUNT(*) AS u FROM tickets WHERE lottery_id=? AND quantity>0",
             (lottery_id,)
@@ -370,33 +408,35 @@ class LotteryDaily(commands.Cog):
         unique_participants = int(row["u"])
         min_p = int(lot["min_participants"])
 
-        # Decide if we must rollover (forced by admin or too few participants)
         do_rollover = force_rollover or (unique_participants < min_p)
 
-        # ----- NEW: House "no winner" mechanic (5th ticket) -----
-        # If we're not already rolling over for admin/min-participants, we run a house draw:
-        # For every 4 user tickets, add 1 "house" ticket. If house wins → ROLLOVER (no winners today).
+        # ----- House "no winner" mechanic -----
         if not do_rollover and qty > 0:
-            house_tickets = qty // 4  # 1 per 4 -> ~20% chance when qty multiple of 4
+            house_tickets = _house_tickets_for(qty)
             total_for_house_draw = qty + house_tickets
             if house_tickets > 0 and total_for_house_draw > 0:
                 r = random.SystemRandom().randrange(1, total_for_house_draw + 1)
                 if r <= house_tickets:
-                    do_rollover = True  # house won → no winner today
+                    do_rollover = True  # house wins → no winner today
 
         if do_rollover:
             await self._bank_add(guild_id, total_pot)
             await db.execute("UPDATE lotteries SET status='rolled' WHERE id=?", (lottery_id,))
             await db.commit()
             if isinstance(ch, discord.TextChannel):
-                reason_txt = "forced no-winner" if force_rollover else (f"need ≥ {min_p} participants" if unique_participants < min_p else "💀 The House devoured the pot!")
+                if force_rollover:
+                    reason_txt = "forced no-winner"
+                elif unique_participants < min_p:
+                    reason_txt = f"need ≥ {min_p} participants"
+                else:
+                    reason_txt = f"house won the draw (ratio {HOUSE_PLAYER_W}:{HOUSE_HOUSE_W})"
                 await ch.send(
                     f"🔁 **Daily Lottery rolled over** — {reason_txt}.\n"
                     f"→ {UNB_ICON} **{total_pot:,}** carried to tomorrow’s 11:00 AM ET round."
                 )
             return
 
-        # Otherwise: draw winners and settle (no house here; winners must be players)
+        # Player day: draw winners and settle
         entries = [(int(r["user_id"]), int(r["quantity"])) for r in await (await db.execute(
             "SELECT user_id, quantity FROM tickets WHERE lottery_id=? AND quantity>0",
             (lottery_id,)
@@ -435,10 +475,10 @@ class LotteryDaily(commands.Cog):
                 f"🥈 2nd: <@{w2 if w2 is not None else w1}> — {UNB_ICON} **{second_amt:,}**"
             )
 
-    # =================== Commands ===================
+    # =================== Slash Commands ===================
     group = app_commands.Group(name="lottery", description="Daily UnbelievaBoat Lottery")
 
-    @group.command(name="open", description="(Admin) Set the daily channel and open immediately (aligns to 11:00 ET).")
+    @group.command(name="open", description="(Admin) Set the daily channel and open the current 24h round.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(announce_channel="Channel to announce & run daily rounds")
     async def open_cmd(self, inter: discord.Interaction, announce_channel: Optional[discord.TextChannel] = None):
@@ -470,11 +510,20 @@ class LotteryDaily(commands.Cog):
                 return await inter.followup.send("No open daily lottery to buy into.", ephemeral=True)
 
             q = int(quantity)
-            cost = q * int(lot["ticket_price"])
+            price = int(lot["ticket_price"])
+            cost = q * price
+
+            # Debit with guard; on failure show balance & needed
             try:
                 await self.unb.debit(inter.guild_id, inter.user.id, cost, reason=f"Daily Lottery tickets x{q}")
             except InsufficientFunds:
-                return await inter.followup.send(f"You don't have enough {UNB_ICON} to buy **{q}** ticket(s).", ephemeral=True)
+                bal = await self.unb.get_cash(inter.guild_id, inter.user.id)
+                need = cost
+                return await inter.followup.send(
+                    f"❌ Not enough {UNB_ICON}. You have **{bal:,}**, need **{need:,}** "
+                    f"for **{q}** ticket(s) (price **{price:,}** each).",
+                    ephemeral=True
+                )
             except Exception as e:
                 return await inter.followup.send(f"Payment error: {e}", ephemeral=True)
 
@@ -488,7 +537,7 @@ class LotteryDaily(commands.Cog):
             await db.commit()
 
             bonus_per_ticket = int(lot["bonus_per_ticket"])
-            pot_delta = q * (int(lot["ticket_price"]) + bonus_per_ticket)
+            pot_delta = q * (price + bonus_per_ticket)
             row = await (await db.execute(
                 "SELECT quantity FROM tickets WHERE lottery_id=? AND user_id=?",
                 (int(lot["id"]), inter.user.id)
@@ -518,8 +567,9 @@ class LotteryDaily(commands.Cog):
         seed = int(lot["seed_amount"])
         total_pot = seed + gross_paid + bonus
         split_first = int(lot["split_first_bps"]) / 10000.0
-        # house odds preview (approx)
-        house_tickets = qty // 4
+
+        # House odds preview (approx)
+        house_tickets = _house_tickets_for(qty)
         house_chance = (house_tickets / (qty + house_tickets)) if (qty + house_tickets) > 0 else 0.0
 
         row = await (await db.execute(
@@ -527,14 +577,15 @@ class LotteryDaily(commands.Cog):
             (int(lot["id"]),)
         )).fetchone()
         participants = int(row["u"])
+
         await inter.followup.send(
             f"🎟️ **Daily Lottery OPEN**\n"
             f"• Ticket: {UNB_ICON} **{int(lot['ticket_price']):,}**  • Bonus: {UNB_ICON} **{int(lot['bonus_per_ticket']):,}** / ticket\n"
             f"• Seed: {UNB_ICON} **{seed:,}**  • Participants: **{participants}**  • Tickets: **{qty:,}**\n"
             f"• Gross: {UNB_ICON} **{gross_paid:,}**  • Bonus: {UNB_ICON} **{bonus:,}**\n"
             f"• **Total pot:** {UNB_ICON} **{total_pot:,}**\n"
-            f"• Payouts on settle: 🥇 **{int(split_first*100)}%** / 🥈 **{int((1-split_first)*100)}%**\n"
-            f"• **House no-winner chance (approx):** **{house_chance:.0%}**\n"
+            f"• Payouts on player day: 🥇 **{int(split_first*100)}%** / 🥈 **{int((1-split_first)*100)}%**\n"
+            f"• **House no-winner chance (approx):** **{house_chance:.0%}** (ratio {HOUSE_PLAYER_W}:{HOUSE_HOUSE_W})\n"
             f"• Closes: <t:{int(lot['close_ts'])}:R> (<t:{int(lot['close_ts'])}:f>)",
             ephemeral=True
         )
@@ -567,7 +618,7 @@ class LotteryDaily(commands.Cog):
             await db.commit()
         await inter.followup.send("✅ Cancelled and refunded.", ephemeral=True)
 
-    @group.command(name="rollover_nowinner", description="(Admin) End round with NO WINNER and roll the pot to tomorrow.")
+    @group.command(name="rollover_nowinner", description="(Admin) Force no-winner and roll the pot to tomorrow.")
     @app_commands.default_permissions(administrator=True)
     async def rollover_nowinner_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
@@ -590,6 +641,7 @@ class LotteryDaily(commands.Cog):
         )).fetchall()
         if not lots:
             return await inter.followup.send("No past daily rounds yet.", ephemeral=True)
+
         lines = []
         for lot in lots:
             lot_id = int(lot["id"])
