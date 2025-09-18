@@ -19,6 +19,121 @@ if not CURRENCY_ICON:
 
 MIN_UNIQUE_BETTORS = int(os.getenv("PRED_MIN_UNIQUE", "4"))  # default 4
 
+# ================== UI Components ===================
+
+class BetModal(discord.ui.Modal, title="Place Your Bet"):
+    """Modal for entering bet amount"""
+    
+    def __init__(self, side: str, cog_instance, user_id: int):
+        super().__init__()
+        self.side = side
+        self.cog = cog_instance
+        self.user_id = user_id
+        
+        # Get user's current bet status for better modal title
+        self.title = f"Bet on {side} - Place Your Bet"
+        
+    bet_amount = discord.ui.TextInput(
+        label="Bet Amount",
+        placeholder="Enter the amount you want to bet...",
+        min_length=1,
+        max_length=10,
+        required=True
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.bet_amount.value)
+            if amount <= 0:
+                await interaction.response.send_message("Bet amount must be positive!", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("Please enter a valid number!", ephemeral=True)
+            return
+        
+        # Process the bet and get feedback
+        feedback_embed = await self.cog.process_bet(interaction, self.side, amount)
+        
+        # Build a personalized buttons view to reflect user selection
+        selected_side = self.side if feedback_embed is not None else None
+        view = PersonalBetButtons(self.cog, selected_side)
+        
+        # Send the feedback embed or error message with personalized buttons
+        if feedback_embed:
+            await interaction.response.send_message(embed=feedback_embed, view=view, ephemeral=True)
+        else:
+            # Handle error cases
+            pred = await self.cog.current_pred(interaction.guild_id)
+            if not pred or pred["status"] != "open":
+                await interaction.response.send_message("No open prediction available.", ephemeral=True)
+            else:
+                await interaction.response.send_message("You don't have enough currency for this bet.", ephemeral=True)
+
+class BetButtons(discord.ui.View):
+    """View containing the Bet on A and Bet on B buttons"""
+    
+    def __init__(self, cog_instance):
+        super().__init__(timeout=None)  # No timeout so buttons persist
+        self.cog = cog_instance
+    
+    @discord.ui.button(label="Bet on A", style=discord.ButtonStyle.primary, emoji="🅰️")
+    async def bet_on_a(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = BetModal("A", self.cog, interaction.user.id)
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="Bet on B", style=discord.ButtonStyle.primary, emoji="🅱️")
+    async def bet_on_b(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = BetModal("B", self.cog, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+# Personalized buttons view (ephemeral) showing selected side in green and the other in gray
+class PersonalBetButtons(discord.ui.View):
+    """Ephemeral per-user buttons that reflect user's current selection with colors."""
+
+    def __init__(self, cog_instance, selected_side: str = None):
+        super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.selected_side = selected_side
+
+        # Create buttons dynamically so we can change styles at runtime
+        self.a_button = discord.ui.Button(
+            label="Bet on A",
+            emoji="🅰️",
+            style=discord.ButtonStyle.primary,
+            custom_id="personal_bet_a",
+        )
+        self.b_button = discord.ui.Button(
+            label="Bet on B",
+            emoji="🅱️",
+            style=discord.ButtonStyle.primary,
+            custom_id="personal_bet_b",
+        )
+
+        # Apply selected styling
+        if self.selected_side == "A":
+            self.a_button.style = discord.ButtonStyle.success  # green
+            self.b_button.style = discord.ButtonStyle.secondary  # gray
+        elif self.selected_side == "B":
+            self.a_button.style = discord.ButtonStyle.secondary  # gray
+            self.b_button.style = discord.ButtonStyle.success  # green
+
+        # Wire callbacks
+        self.a_button.callback = self._on_bet_a
+        self.b_button.callback = self._on_bet_b
+
+        # Add to view
+        self.add_item(self.a_button)
+        self.add_item(self.b_button)
+
+        
+    async def _on_bet_a(self, interaction: discord.Interaction):
+        modal = BetModal("A", self.cog, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    async def _on_bet_b(self, interaction: discord.Interaction):
+        modal = BetModal("B", self.cog, interaction.user.id)
+        await interaction.response.send_modal(modal)
+
 # ================== Cog ===================
 class Predictions(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -109,6 +224,11 @@ class Predictions(commands.Cog):
         embed = await self.make_embed(guild_id)
         if not embed:
             return
+        
+        # Create view with buttons (only show buttons if prediction is open)
+        view = None
+        if pred["status"] == "open":
+            view = BetButtons(self)
             
         # Try to edit existing message
         if pred["embed_message_id"] and pred["announce_channel_id"]:
@@ -117,9 +237,9 @@ class Predictions(commands.Cog):
                 if channel:
                     message = await channel.fetch_message(pred["embed_message_id"])
                     if content:
-                        await message.edit(content=content, embed=embed)
+                        await message.edit(content=content, embed=embed, view=view)
                     else:
-                        await message.edit(embed=embed)
+                        await message.edit(embed=embed, view=view)
                     return
             except (discord.NotFound, discord.HTTPException):
                 # Message was deleted or other error, fall back to sending new message
@@ -130,9 +250,9 @@ class Predictions(commands.Cog):
             channel = self.bot.get_channel(pred["announce_channel_id"])
             if channel:
                 if content:
-                    message = await channel.send(content=content, embed=embed)
+                    message = await channel.send(content=content, embed=embed, view=view)
                 else:
-                    message = await channel.send(embed=embed)
+                    message = await channel.send(embed=embed, view=view)
                 # Update stored message ID
                 db = await self.get_db()
                 await db.execute(
@@ -166,6 +286,12 @@ class Predictions(commands.Cog):
         row = await cur.fetchone()
         return row[0] if row else 0
 
+    async def get_user_bet(self, guild_id: int, user_id: int):
+        """Get a user's current bet for this prediction"""
+        db = await self.get_db()
+        cur = await db.execute("SELECT side, amount FROM bets WHERE guild_id=? AND user_id=?", (guild_id, user_id))
+        return await cur.fetchone()
+
     # === NEW: counts per side + total ===
     async def bettor_counts(self, guild_id: int) -> tuple[int, int, int]:
         """Return (count_A, count_B, total_unique_bettors)."""
@@ -197,6 +323,94 @@ class Predictions(commands.Cog):
         await db.execute("DELETE FROM bets WHERE guild_id=?", (guild_id,))
         await db.commit()
 
+    async def process_bet(self, interaction: discord.Interaction, side: str, amount: int):
+        """Process a bet placed via the button/modal interface"""
+        pred = await self.current_pred(interaction.guild_id)
+        if not pred or pred["status"] != "open":
+            return None  # Return None to indicate error
+
+        try:
+            if not self.engauge_client:
+                return None  # Return None to indicate error
+                
+            balance = await self.engauge_client.get_balance(interaction.user.id)
+            if balance < amount:
+                return None  # Return None to indicate error
+                
+            await self.engauge_client.debit(interaction.user.id, amount)
+        except InsufficientFunds:
+            return None  # Return None to indicate error
+        except Exception as e:
+            return None  # Return None to indicate error
+
+        db = await self.get_db()
+        # Check for existing bet and refund if necessary
+        cur = await db.execute("SELECT amount, side FROM bets WHERE guild_id=? AND user_id=?", 
+                              (interaction.guild_id, interaction.user.id))
+        row = await cur.fetchone()
+        
+        feedback_embed = None
+        
+        if row:
+            old_amt = row["amount"]
+            old_side = row["side"]
+            if self.engauge_client:
+                await self.engauge_client.credit(interaction.user.id, old_amt)
+            await db.execute("DELETE FROM bets WHERE guild_id=? AND user_id=?", 
+                           (interaction.guild_id, interaction.user.id))
+            await db.commit()
+            
+            # Create embed for bet change feedback
+            feedback_embed = discord.Embed(
+                title="🔄 Bet Changed",
+                description=f"**{interaction.user.display_name}** changed their bet:",
+                color=0xFF6B35  # Bright orange color
+            )
+            feedback_embed.add_field(
+                name="Previous Bet", 
+                value=f"**{old_side}** - {self.fmt_amt(old_amt)}", 
+                inline=True
+            )
+            feedback_embed.add_field(
+                name="New Bet", 
+                value=f"**{side}** - {self.fmt_amt(amount)}", 
+                inline=True
+            )
+            feedback_embed.add_field(
+                name="Status", 
+                value="✅ Bet updated successfully!", 
+                inline=False
+            )
+        else:
+            # Create embed for new bet feedback
+            feedback_embed = discord.Embed(
+                title="🎯 New Bet Placed",
+                description=f"**{interaction.user.display_name}** placed a new bet:",
+                color=0x00D166  # Bright green color
+            )
+            feedback_embed.add_field(
+                name="Bet Details", 
+                value=f"**{side}** - {self.fmt_amt(amount)}", 
+                inline=True
+            )
+            feedback_embed.add_field(
+                name="Status", 
+                value="✅ Bet placed successfully!", 
+                inline=True
+            )
+
+        # Record the new bet
+        await db.execute(
+            "INSERT INTO bets (guild_id,user_id,side,amount) VALUES (?,?,?,?)",
+            (interaction.guild_id, interaction.user.id, side, amount),
+        )
+        await db.commit()
+
+        # Update the embed
+        await self.update_embed(interaction.guild_id)
+        
+        return feedback_embed
+
     # ---------- Slash commands ----------
     @app_commands.command(name="pred_start", description="(Admin/Techie) Start a new prediction")
     @is_admin_or_manager()
@@ -221,64 +435,56 @@ class Predictions(commands.Cog):
         await db.commit()
 
         await inter.followup.send(f"Prediction started: **{title}**", ephemeral=True)
-        channel = inter.channel
-        if channel:
-            embed = await self.make_embed(inter.guild_id)
-            message = await channel.send(embed=embed)
-            # Store the message ID for future edits
-            await db.execute(
-                "UPDATE predictions SET embed_message_id=? WHERE guild_id=?", 
-                (message.id, inter.guild_id)
-            )
-            await db.commit()
-
-    @app_commands.command(name="pred_bet", description="Place a bet on the current prediction")
-    async def bet(self, inter: discord.Interaction, side: str, amount: int):
-        side = side.upper()
-        if side not in ("A", "B"):
-            return await inter.response.send_message("Side must be A or B", ephemeral=True)
-
-        await inter.response.defer(ephemeral=True)
-        pred = await self.current_pred(inter.guild_id)
-        if not pred or pred["status"] != "open":
-            return await inter.followup.send("No open prediction.", ephemeral=True)
-
-        try:
-            if not self.engauge_client:
-                return await inter.followup.send("Engauge client not available.", ephemeral=True)
-            balance = await self.engauge_client.get_balance(inter.user.id)
-            if balance < amount:
-                return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
-            await self.engauge_client.debit(inter.user.id, amount)
-        except InsufficientFunds:
-            return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
-
-        db = await self.get_db()
-        # refund any previous bet first
-        cur = await db.execute("SELECT amount, side FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
-        row = await cur.fetchone()
-        if row:
-            old_amt = row["amount"]
-            old_side = row["side"]
-            if self.engauge_client:
-                await self.engauge_client.credit(inter.user.id, old_amt)
-            await db.execute("DELETE FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
-            await db.commit()
-            await inter.followup.send(
-                f"Changed bet from {old_side} ({self.fmt_amt(old_amt)}) to {side} ({self.fmt_amt(amount)}).",
-                ephemeral=True,
-            )
-        else:
-            await inter.followup.send(f"Bet placed on {side} for {self.fmt_amt(amount)}.", ephemeral=True)
-
-        await db.execute(
-            "INSERT INTO bets (guild_id,user_id,side,amount) VALUES (?,?,?,?)",
-            (inter.guild_id, inter.user.id, side, amount),
-        )
-        await db.commit()
-
-        # Update the existing embed instead of sending a new one
+        # Update the embed with buttons
         await self.update_embed(inter.guild_id)
+
+    # @app_commands.command(name="pred_bet", description="Place a bet on the current prediction")
+    # async def bet(self, inter: discord.Interaction, side: str, amount: int):
+    #     side = side.upper()
+    #     if side not in ("A", "B"):
+    #         return await inter.response.send_message("Side must be A or B", ephemeral=True)
+
+    #     await inter.response.defer(ephemeral=True)
+    #     pred = await self.current_pred(inter.guild_id)
+    #     if not pred or pred["status"] != "open":
+    #         return await inter.followup.send("No open prediction.", ephemeral=True)
+
+    #     try:
+    #         if not self.engauge_client:
+    #             return await inter.followup.send("Engauge client not available.", ephemeral=True)
+    #         balance = await self.engauge_client.get_balance(inter.user.id)
+    #         if balance < amount:
+    #             return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
+    #         await self.engauge_client.debit(inter.user.id, amount)
+    #     except InsufficientFunds:
+    #         return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
+
+    #     db = await self.get_db()
+    #     # refund any previous bet first
+    #     cur = await db.execute("SELECT amount, side FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
+    #     row = await cur.fetchone()
+    #     if row:
+    #         old_amt = row["amount"]
+    #         old_side = row["side"]
+    #         if self.engauge_client:
+    #             await self.engauge_client.credit(inter.user.id, old_amt)
+    #         await db.execute("DELETE FROM bets WHERE guild_id=? AND user_id=?", (inter.guild_id, inter.user.id))
+    #         await db.commit()
+    #         await inter.followup.send(
+    #             f"Changed bet from {old_side} ({self.fmt_amt(old_amt)}) to {side} ({self.fmt_amt(amount)}).",
+    #             ephemeral=True,
+    #         )
+    #     else:
+    #         await inter.followup.send(f"Bet placed on {side} for {self.fmt_amt(amount)}.", ephemeral=True)
+
+    #     await db.execute(
+    #         "INSERT INTO bets (guild_id,user_id,side,amount) VALUES (?,?,?,?)",
+    #         (inter.guild_id, inter.user.id, side, amount),
+    #     )
+    #     await db.commit()
+
+    #     # Update the existing embed instead of sending a new one
+    #     await self.update_embed(inter.guild_id)
 
     @app_commands.command(name="pred_resolve", description="(Admin/Techie) Resolve and pay out a prediction")
     @is_admin_or_manager()
@@ -341,10 +547,10 @@ class Predictions(commands.Cog):
         pred = await self.current_pred(inter.guild_id)
         if not pred:
             return await inter.followup.send("No active prediction.", ephemeral=True)
-        await inter.followup.send(embed=await self.make_embed(inter.guild_id), ephemeral=True)
+        await inter.followup.send(embed=await self.make_embed(inter.guild_id, inter.user.id), ephemeral=True)
 
     # ---------- Embed ----------
-    async def make_embed(self, guild_id: int):
+    async def make_embed(self, guild_id: int, user_id: int = None):
         p = await self.current_pred(guild_id)
         if not p:
             return None
@@ -384,6 +590,15 @@ class Predictions(commands.Cog):
             elif winner == 'B':
                 outcome_b_text = f"🏆 **{p['outcome_b']}** 🏆"
 
+        # Get user's current bet if user_id provided
+        user_bet_info = ""
+        if user_id and p['status'] == 'open':
+            user_bet = await self.get_user_bet(guild_id, user_id)
+            if user_bet:
+                user_bet_info = f"\n🎯 **Your current bet:** {user_bet['side']} - {self.fmt_amt(user_bet['amount'])}"
+            else:
+                user_bet_info = f"\n💡 **No bet placed yet** - Click the buttons below to bet!"
+
         # Different description based on status
         if p['status'] == 'resolved':
             description = (
@@ -398,9 +613,10 @@ class Predictions(commands.Cog):
                 f"**Status:** `{p['status'].upper()}`\n"
                 f"⏳ **Time left:** {rel}  (locks at {abs_t})\n\n"
                 f"**A)** {outcome_a_text}\n"
-                f"**B)** {outcome_b_text}\n\n"
+                f"**B)** {outcome_b_text}\n"
+                f"{user_bet_info}\n\n"
                 f"⚠️ Auto-cancels at lock if fewer than {MIN_UNIQUE_BETTORS} unique participants.\n"
-                f"➡️ Use `/pred_bet` to place your bets!"
+                f"➡️ Use the buttons below or `/pred_bet` to place your bets!"
             )
 
         e = discord.Embed(

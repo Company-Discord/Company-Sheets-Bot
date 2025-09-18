@@ -6,10 +6,9 @@ import time
 import random
 import asyncio
 from typing import Optional, Dict, List, Tuple
-from zoneinfo import ZoneInfo
+import pytz
 from datetime import datetime, timedelta
 
-import aiohttp
 import aiosqlite
 import discord
 from discord.ext import commands, tasks
@@ -30,86 +29,22 @@ DEFAULT_SPLIT_FIRST_BPS = int(os.getenv("LOTTERY_SPLIT_FIRST_BPS", "7000"))     
 HOUSE_RATIO_STR = os.getenv("LOTTERY_HOUSE_RATIO", "4:1")
 
 # Fixed daily schedule
-DAILY_TZ = ZoneInfo("America/New_York")
+DAILY_TZ = pytz.timezone("America/New_York")
 DAILY_HOUR = 11
 DAILY_MINUTE = 0
 
 
-# =================== UnbelievaBoat API ===================
+# =================== Import External APIs ===================
 
-class UnbError(Exception):
+# Import UnbelievaBoat utilities
+from utils import (
+    get_unb_client, credit_user, debit_user, get_user_balance
+)
+from unbelievaboat_api import UnbelievaBoatError
+
+# Custom lottery exceptions
+class InsufficientFunds(UnbelievaBoatError):
     pass
-
-
-class InsufficientFunds(UnbError):
-    pass
-
-
-class UnbelievaBoat:
-    def __init__(self):
-        self.base = "https://unbelievaboat.com/api/v1"
-        self.token = os.getenv("UNBELIEVABOAT_TOKEN")
-        if not self.token:
-            raise RuntimeError("Set UNBELIEVABOAT_TOKEN")
-        self.allow_negative = os.getenv("UNB_ALLOW_NEGATIVE", "0") in ("1","true","True","yes")
-        # NEW: where to send PRIZES
-        self.payout_to_bank = os.getenv("LOTTERY_PAYOUT_TO", "bank").lower() == "bank"
-
-    def _headers(self):
-        return {
-            "Authorization": self.token,
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
-
-    # Patch for cash or bank 
-    async def _patch_balance(self, guild_id: int, user_id: int, *, cash_delta: int = 0, bank_delta: int = 0, reason: str = "") -> dict:
-        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
-        payload = {"reason": reason}
-        if cash_delta:
-            payload["cash"] = int(cash_delta)
-        if bank_delta:
-            payload["bank"] = int(bank_delta)
-        async with aiohttp.ClientSession() as s:
-            async with s.patch(url, json=payload, headers=self._headers()) as r:
-                txt = await r.text()
-                if r.status >= 400:
-                    if "insufficient" in txt.lower():
-                        raise InsufficientFunds(txt)
-                    raise UnbError(f"UNB HTTP {r.status}: {txt}")
-                try:
-                    return await r.json()
-                except Exception:
-                    return {}
-
-    async def get_user(self, guild_id: int, user_id: int) -> dict:
-        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, headers=self._headers()) as r:
-                if r.status >= 400:
-                    raise UnbError(f"UNB HTTP {r.status}: {await r.text()}")
-                return await r.json()
-
-    async def get_cash(self, guild_id: int, user_id: int) -> int:
-        data = await self.get_user(guild_id, user_id)
-        return int(data.get("cash", 0))
-
-    # BUY: still debit from CASH 
-    async def debit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        amount = abs(int(amount))
-        if not self.allow_negative:
-            bal = await self.get_cash(guild_id, user_id)
-            if bal < amount:
-                raise InsufficientFunds(f"Need {amount} but have {bal}")
-        await self._patch_balance(guild_id, user_id, cash_delta=-amount, reason=reason)
-
-    # PRIZES: credit to BANK by default 
-    async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        amount = abs(int(amount))
-        if self.payout_to_bank:
-            await self._patch_balance(guild_id, user_id, bank_delta=amount, reason=reason)
-        else:
-            await self._patch_balance(guild_id, user_id, cash_delta=amount, reason=reason)
 
 
 
@@ -219,7 +154,10 @@ def _house_tickets_for(qty: int) -> int:
 
 
 def next_11am_et(after_ts: Optional[int] = None) -> int:
-    base = datetime.now(DAILY_TZ) if after_ts is None else datetime.fromtimestamp(after_ts, DAILY_TZ)
+    if after_ts is None:
+        base = datetime.now(DAILY_TZ)
+    else:
+        base = datetime.fromtimestamp(after_ts, DAILY_TZ)
     candidate = base.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
     if base >= candidate:
         candidate = candidate + timedelta(days=1)
@@ -235,9 +173,10 @@ class LotteryDaily(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.unb = UnbelievaBoat()
         self.db: Optional[aiosqlite.Connection] = None
         self._locks: Dict[int, asyncio.Lock] = {}
+        # Configuration for prize payouts (bank vs cash)
+        self.payout_to_bank = os.getenv("LOTTERY_PAYOUT_TO", "bank").lower() == "bank"
 
         self.sweeper.start()
         self.opener.start()
@@ -265,6 +204,16 @@ class LotteryDaily(commands.Cog):
             L = asyncio.Lock()
             self._locks[guild_id] = L
         return L
+
+    async def _credit_prize(self, guild_id: int, user_id: int, amount: int, reason: str):
+        """Credit a lottery prize to user's account (bank or cash based on config)."""
+        if self.payout_to_bank:
+            # Use the unbelievaboat_api client directly for bank credits
+            unb_client = get_unb_client()
+            await unb_client.update_user_balance(guild_id, user_id, bank=amount, reason=reason)
+        else:
+            # Use utils for cash credits
+            await credit_user(guild_id, user_id, amount, reason)
 
     async def _last_channel_or_none(self, guild_id: int) -> Optional[int]:
         db = await self._get_db()
@@ -312,7 +261,7 @@ class LotteryDaily(commands.Cog):
 
     async def _bank_clear(self, guild_id: int) -> int:
         db = await self._get_db()
-        amt = await self._bank_get(guild_id)
+        amt = await self._TT_get(guild_id)
         await db.execute(
             "INSERT INTO rollover_bank (guild_id, amount) VALUES (?, 0) "
             "ON CONFLICT(guild_id) DO UPDATE SET amount=0",
@@ -462,20 +411,20 @@ class LotteryDaily(commands.Cog):
         draw_ts = now_i()
 
         try:
-            await self.unb.credit(guild_id, w1, first_amt, "Daily Lottery prize (1st)")
+            await self._credit_prize(guild_id, w1, first_amt, "Daily Lottery prize (1st)")
             await db.execute(
                 "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
                 (lottery_id, 1, w1, first_amt, draw_ts)
             )
             if w2 is not None:
-                await self.unb.credit(guild_id, w2, second_amt, "Daily Lottery prize (2nd)")
+                await self._credit_prize(guild_id, w2, second_amt, "Daily Lottery prize (2nd)")
                 await db.execute(
                     "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
                     (lottery_id, 2, w2, second_amt, draw_ts)
                 )
             else:
                 # Only one unique entrant—give them second share too
-                await self.unb.credit(guild_id, w1, second_amt, "Daily Lottery prize (only participant bonus)")
+                await self._credit_prize(guild_id, w1, second_amt, "Daily Lottery prize (only participant bonus)")
                 await db.execute(
                     "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
                     (lottery_id, 2, w1, second_amt, draw_ts)
@@ -531,14 +480,17 @@ class LotteryDaily(commands.Cog):
             cost = q * price
 
             try:
-                await self.unb.debit(inter.guild_id, inter.user.id, cost, reason=f"Daily Lottery tickets x{q}")
-            except InsufficientFunds:
-                bal = await self.unb.get_cash(inter.guild_id, inter.user.id)
-                return await inter.followup.send(
-                    f"❌ Not enough {UNB_ICON}. You have **{bal:,}**, need **{cost:,}** "
-                    f"for **{q}** ticket(s) (price **{price:,}** each).",
-                    ephemeral=True
-                )
+                await debit_user(inter.guild_id, inter.user.id, cost, reason=f"Daily Lottery tickets x{q}")
+            except (InsufficientFunds, UnbelievaBoatError) as e:
+                if "insufficient" in str(e).lower():
+                    bal = await get_user_balance(inter.guild_id, inter.user.id)
+                    return await inter.followup.send(
+                        f"❌ Not enough {UNB_ICON}. You have **{bal:,}**, need **{cost:,}** "
+                        f"for **{q}** ticket(s) (price **{price:,}** each).",
+                        ephemeral=True
+                    )
+                else:
+                    raise
             except Exception as e:
                 return await inter.followup.send(f"Payment error: {e}", ephemeral=True)
 
@@ -573,7 +525,7 @@ class LotteryDaily(commands.Cog):
         db = await self._get_db()
         lot = await self._current_open(inter.guild_id)
         if not lot:
-            bank = await self._bank_get(inter.guild_id)
+            bank = await self._TT_get(inter.guild_id)
             return await inter.followup.send(
                 f"🎟️ Daily Lottery is **idle**. Next round auto-opens at **11:00 AM ET**.\n"
                 f"Rollover bank: {UNB_ICON} **{bank:,}**",
@@ -632,7 +584,8 @@ class LotteryDaily(commands.Cog):
                     amt = int(r["amount_paid"])
                     if amt > 0:
                         try:
-                            await self.unb.credit(inter.guild_id, uid, amt, reason="Daily Lottery cancelled (admin)")
+                            # Refunds go to cash (where tickets were purchased from)
+                            await credit_user(inter.guild_id, uid, amt, reason="Daily Lottery cancelled (admin)")
                         except Exception as e:
                             print(f"refund error uid={uid}: {e}")
 

@@ -175,8 +175,8 @@ class Crash(commands.Cog):
             top = f"**Status:** `BETTING`\n⏳ **Round starts** {countdown}\n🎯 **Current Mult:** 1.00×\n"
         elif rs.status == "flying":
             top = f"**Status:** `FLYING`\n🚀 **Current Mult:** **{self._format_mult(rs.current_mult)}**\n"
-        elif rs.status == "crashed":
-            top = f"**Status:** `CRASHED`\n💥 **Crashed at:** **{self._format_mult(rs.crash_at_multiplier)}**\n"
+        elif rs.status == "COMPLETED":
+            top = f"**Status:** `COMPLETED`\n💥 **Final Multiplier:** **{self._format_mult(rs.crash_at_multiplier)}**\n"
         else:
             top = f"**Status:** `{rs.status.upper()}`\n"
 
@@ -192,7 +192,7 @@ class Crash(commands.Cog):
         emb = discord.Embed(
             title="🎰 Crash — High Risk · High Reward",
             description=desc,
-            color=discord.Color.orange() if rs.status == "flying" else discord.Color.blurple()
+            color=discord.Color.red() if rs.status == "COMPLETED" else (discord.Color.orange() if rs.status == "flying" else discord.Color.blurple())
         )
 
         if rs.bets:
@@ -200,9 +200,18 @@ class Crash(commands.Cog):
             for uid, b in list(rs.bets.items())[:8]:
                 u = self.bot.get_user(uid)
                 name = u.name if u else str(uid)
-                status = "💰 cashed" if b.cashed_out else "⏳ live"
-                ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
-                val = b.payout if b.cashed_out else b.amount
+                if rs.status == "COMPLETED":
+                    if b.cashed_out:
+                        status = "✅ cashed out"
+                        val = b.payout
+                    else:
+                        status = "❌ crashed"
+                        val = b.amount
+                    ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
+                else:
+                    status = "💰 cashed" if b.cashed_out else "⏳ live"
+                    ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
+                    val = b.payout if b.cashed_out else b.amount
                 lines.append(f"• **{name}** — {status}{ac} — {CURRENCY_ICON} {val:,}")
             emb.add_field(name="Players", value="\n".join(lines), inline=False)
 
@@ -257,14 +266,13 @@ class Crash(commands.Cog):
             await asyncio.sleep(TICK_SECONDS)
 
         # Crash
-        rs.status = "crashed"
+        rs.status = "COMPLETED"
         rs.current_mult = rs.crash_at_multiplier
         await self._refresh_embed(guild_id, footer="💥 The rocket crashed!")
 
         # Settle & reset
         await asyncio.sleep(2.0)
-        rs.status = "paid"
-        await self._refresh_embed(guild_id, footer="Round settled. Start a new one with /crash start")
+        await self._refresh_embed(guild_id, footer="Round completed. Start a new one with /crash start")
 
         await asyncio.sleep(3.0)
         # Reset to idle; keep the message hook for continuity

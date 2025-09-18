@@ -126,7 +126,7 @@ async def credit_user(guild_id: int, user_id: int, amount: int, reason: str) -> 
         UnbelievaBoatError: On API errors
     """
     unb_client = get_unb_client()
-    await unb_client.update_user_balance(guild_id, user_id, cash=abs(amount), reason=reason)
+    await unb_client.update_user_balance(guild_id, user_id, bank=abs(amount), reason=reason)
 
 
 async def debit_user(guild_id: int, user_id: int, amount: int, reason: str) -> None:
