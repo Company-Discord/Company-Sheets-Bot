@@ -1,4 +1,5 @@
-# lottery_daily.py — Daily Lottery 
+# lottery_daily.py — Daily Lottery (UnbelievaBoat) with House mechanic (ratio hidden from users)
+# Requires: discord.py 2.x, aiohttp, aiosqlite, Python 3.10+ (for zoneinfo)
 
 import os
 import math
@@ -16,7 +17,7 @@ from discord import app_commands
 
 # =================== Config (env) ===================
 
-UNB_ICON = os.getenv("CURRENCY_EMOTE", "")
+UNB_ICON = os.getenv("CURRENCY_EMOTE", "💵")
 
 DB_PATH = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
 
@@ -245,7 +246,7 @@ class LotteryDaily(commands.Cog):
         bonus = qty * int(lot["bonus_per_ticket"])
         return (qty, paid, bonus)
 
-    async def _TT_get(self, guild_id: int) -> int:
+    async def _bank_get(self, guild_id: int) -> int:
         db = await self._get_db()
         row = await (await db.execute("SELECT amount FROM rollover_bank WHERE guild_id=?", (guild_id,))).fetchone()
         return int(row["amount"]) if row else 0
