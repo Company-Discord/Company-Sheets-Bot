@@ -659,13 +659,89 @@ class LotteryDaily(commands.Cog):
             ephemeral=True
         )
         if(exists):
-            query = "SELECT * FROM lotteries"
-            cursor = await self._get_db().execute(query)
-            rows = await cursor.fetchall()
-            for row in rows:
-                await inter.response.send_message(
-                    f"DB Lottery Row: {row}",
+            db = await self._get_db()
+            # List all tables
+            tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+            tables_cursor = await db.execute(tables_query)
+            tables = await tables_cursor.fetchall()
+            
+            await inter.response.send_message(
+                f"📊 **Database Tables Found:** {len(tables)}",
+                ephemeral=True
+            )
+            
+            for table in tables:
+                table_name = table['name']
+                await inter.followup.send(
+                    f"📋 **Table:** `{table_name}`",
                     ephemeral=True
                 )
+                
+                # Get row count for each table
+                count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                count_cursor = await db.execute(count_query)
+                count_result = await count_cursor.fetchone()
+                row_count = count_result['count']
+                
+                await inter.followup.send(
+                    f"   📈 **Rows:** {row_count}",
+                    ephemeral=True
+                )
+                
+                # Show schema for each table
+                schema_query = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
+                schema_cursor = await db.execute(schema_query, (table_name,))
+                schema_result = await schema_cursor.fetchone()
+                if schema_result and schema_result['sql']:
+                    schema_text = schema_result['sql'][:200] + "..." if len(schema_result['sql']) > 200 else schema_result['sql']
+                    await inter.followup.send(
+                        f"   🏗️ **Schema:** `{schema_text}`",
+                        ephemeral=True
+                    )
+                
+                # Show sample data (first 3 rows)
+                if row_count > 0:
+                    sample_query = f"SELECT * FROM {table_name} LIMIT 3"
+                    sample_cursor = await db.execute(sample_query)
+                    sample_rows = await sample_cursor.fetchall()
+                    
+                    for i, row in enumerate(sample_rows, 1):
+                        row_dict = dict(row)
+                        await inter.followup.send(
+                            f"   📄 **Sample Row {i}:** `{row_dict}`",
+                            ephemeral=True
+                        )
+
+    @group.command(name="tables", description="List all tables in the lottery database")
+    @is_admin_or_manager()
+    async def list_tables(self, inter: discord.Interaction):
+        """Simple command to just list table names and row counts"""
+        await inter.response.defer(ephemeral=True)
+        
+        try:
+            db = await self._get_db()
+            tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+            tables_cursor = await db.execute(tables_query)
+            tables = await tables_cursor.fetchall()
+            
+            if not tables:
+                return await inter.followup.send("No tables found in database.", ephemeral=True)
+            
+            table_info = []
+            for table in tables:
+                table_name = table['name']
+                count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                count_cursor = await db.execute(count_query)
+                count_result = await count_cursor.fetchone()
+                row_count = count_result['count']
+                table_info.append(f"• **{table_name}**: {row_count} rows")
+            
+            await inter.followup.send(
+                f"📊 **Database Tables ({len(tables)}):**\n" + "\n".join(table_info),
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await inter.followup.send(f"❌ Error accessing database: {e}", ephemeral=True)
 async def setup(bot: commands.Bot):
     await bot.add_cog(LotteryDaily(bot))
