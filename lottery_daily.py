@@ -52,15 +52,36 @@ class UnbelievaBoat:
         self.token = os.getenv("UNBELIEVABOAT_TOKEN")
         if not self.token:
             raise RuntimeError("Set UNBELIEVABOAT_TOKEN")
-        # default: DO NOT allow negatives
-        self.allow_negative = os.getenv("UNB_ALLOW_NEGATIVE", "0") in ("1", "true", "True", "yes")
+        self.allow_negative = os.getenv("UNB_ALLOW_NEGATIVE", "0") in ("1","true","True","yes")
+        # NEW: where to send PRIZES
+        self.payout_to_bank = os.getenv("LOTTERY_PAYOUT_TO", "bank").lower() == "bank"
 
-    def _headers(self) -> dict:
+    def _headers(self):
         return {
             "Authorization": self.token,
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+
+    # NEW: generic patch for either cash or bank (or both)
+    async def _patch_balance(self, guild_id: int, user_id: int, *, cash_delta: int = 0, bank_delta: int = 0, reason: str = "") -> dict:
+        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
+        payload = {"reason": reason}
+        if cash_delta:
+            payload["cash"] = int(cash_delta)
+        if bank_delta:
+            payload["bank"] = int(bank_delta)
+        async with aiohttp.ClientSession() as s:
+            async with s.patch(url, json=payload, headers=self._headers()) as r:
+                txt = await r.text()
+                if r.status >= 400:
+                    if "insufficient" in txt.lower():
+                        raise InsufficientFunds(txt)
+                    raise UnbError(f"UNB HTTP {r.status}: {txt}")
+                try:
+                    return await r.json()
+                except Exception:
+                    return {}
 
     async def get_user(self, guild_id: int, user_id: int) -> dict:
         url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
@@ -74,32 +95,23 @@ class UnbelievaBoat:
         data = await self.get_user(guild_id, user_id)
         return int(data.get("cash", 0))
 
-    async def patch_cash(self, guild_id: int, user_id: int, delta: int, reason: str) -> dict:
-        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
-        payload = {"cash": int(delta), "reason": reason}
-        async with aiohttp.ClientSession() as s:
-            async with s.patch(url, json=payload, headers=self._headers()) as r:
-                txt = await r.text()
-                if r.status >= 400:
-                    if "insufficient" in txt.lower():
-                        raise InsufficientFunds(txt)
-                    raise UnbError(f"UNB HTTP {r.status}: {txt}")
-                try:
-                    return await r.json()
-                except Exception:
-                    return {}
-
+    # BUY: still debit from CASH (tickets are paid from cash)
     async def debit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        """Debit and enforce non-negative balance unless allow_negative is true."""
         amount = abs(int(amount))
         if not self.allow_negative:
             bal = await self.get_cash(guild_id, user_id)
             if bal < amount:
                 raise InsufficientFunds(f"Need {amount} but have {bal}")
-        await self.patch_cash(guild_id, user_id, -amount, reason)
+        await self._patch_balance(guild_id, user_id, cash_delta=-amount, reason=reason)
 
+    # PRIZES: credit to BANK by default (or CASH if you set LOTTERY_PAYOUT_TO=cash)
     async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        await self.patch_cash(guild_id, user_id, abs(int(amount)), reason)
+        amount = abs(int(amount))
+        if self.payout_to_bank:
+            await self._patch_balance(guild_id, user_id, bank_delta=amount, reason=reason)
+        else:
+            await self._patch_balance(guild_id, user_id, cash_delta=amount, reason=reason)
+
 
 
 # =================== DB Schema ===================
@@ -285,7 +297,7 @@ class LotteryDaily(commands.Cog):
         bonus = qty * int(lot["bonus_per_ticket"])
         return (qty, paid, bonus)
 
-    async def _bank_get(self, guild_id: int) -> int:
+    async def _TT_get(self, guild_id: int) -> int:
         db = await self._get_db()
         row = await (await db.execute("SELECT amount FROM rollover_bank WHERE guild_id=?", (guild_id,))).fetchone()
         return int(row["amount"]) if row else 0
