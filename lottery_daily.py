@@ -1,5 +1,4 @@
-# lottery_daily.py — Daily Lottery (UnbelievaBoat) with House mechanic (ratio hidden from users)
-# Requires: discord.py 2.x, aiohttp, aiosqlite, Python 3.10+ (for zoneinfo)
+# lottery_daily.py — Daily Lottery 
 
 import os
 import math
@@ -18,7 +17,7 @@ from discord import app_commands
 
 # =================== Config (env) ===================
 
-UNB_ICON = os.getenv("CURRENCY_EMOTE", "💵")
+UNB_ICON = os.getenv("CURRENCY_EMOTE", "")
 
 DB_PATH = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
 
@@ -63,7 +62,7 @@ class UnbelievaBoat:
             "Content-Type": "application/json",
         }
 
-    # NEW: generic patch for either cash or bank (or both)
+    # Patch for cash or bank 
     async def _patch_balance(self, guild_id: int, user_id: int, *, cash_delta: int = 0, bank_delta: int = 0, reason: str = "") -> dict:
         url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
         payload = {"reason": reason}
@@ -95,7 +94,7 @@ class UnbelievaBoat:
         data = await self.get_user(guild_id, user_id)
         return int(data.get("cash", 0))
 
-    # BUY: still debit from CASH (tickets are paid from cash)
+    # BUY: still debit from CASH 
     async def debit(self, guild_id: int, user_id: int, amount: int, reason: str):
         amount = abs(int(amount))
         if not self.allow_negative:
@@ -104,7 +103,7 @@ class UnbelievaBoat:
                 raise InsufficientFunds(f"Need {amount} but have {bal}")
         await self._patch_balance(guild_id, user_id, cash_delta=-amount, reason=reason)
 
-    # PRIZES: credit to BANK by default (or CASH if you set LOTTERY_PAYOUT_TO=cash)
+    # PRIZES: credit to BANK by default 
     async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
         amount = abs(int(amount))
         if self.payout_to_bank:
