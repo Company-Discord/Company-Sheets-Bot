@@ -616,7 +616,7 @@ class Predictions(commands.Cog):
                 f"**B)** {outcome_b_text}\n"
                 f"{user_bet_info}\n\n"
                 f"⚠️ Auto-cancels at lock if fewer than {MIN_UNIQUE_BETTORS} unique participants.\n"
-                f"➡️ Use the buttons below or `/pred_bet` to place your bets!"
+                f"➡️ Use the buttons below to place your bets!"
             )
 
         e = discord.Embed(

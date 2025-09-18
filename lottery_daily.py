@@ -262,7 +262,7 @@ class LotteryDaily(commands.Cog):
 
     async def _bank_clear(self, guild_id: int) -> int:
         db = await self._get_db()
-        amt = await self._TT_get(guild_id)
+        amt = await self._bank_get(guild_id)
         await db.execute(
             "INSERT INTO rollover_bank (guild_id, amount) VALUES (?, 0) "
             "ON CONFLICT(guild_id) DO UPDATE SET amount=0",
@@ -526,7 +526,7 @@ class LotteryDaily(commands.Cog):
         db = await self._get_db()
         lot = await self._current_open(inter.guild_id)
         if not lot:
-            bank = await self._TT_get(inter.guild_id)
+            bank = await self._bank_get(inter.guild_id)
             return await inter.followup.send(
                 f"🎟️ Daily Lottery is **idle**. Next round auto-opens at **11:00 AM ET**.\n"
                 f"Rollover bank: {UNB_ICON} **{bank:,}**",
