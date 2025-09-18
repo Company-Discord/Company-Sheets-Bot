@@ -39,7 +39,7 @@ DAILY_MINUTE = 0
 
 # Import UnbelievaBoat utilities
 from utils import (
-    get_unb_client, credit_user, debit_user, get_user_balance
+    get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
 )
 from unbelievaboat_api import UnbelievaBoatError
 
@@ -647,6 +647,25 @@ class LotteryDaily(commands.Cog):
 
         await inter.followup.send("\n\n".join(lines)[:1995], ephemeral=True)
 
-
+    @group.command(name="storage", description="(Admin) Show DB path & size")
+    @is_admin_or_manager()
+    async def storage_cmd(self, inter: discord.Interaction):
+        import os
+        db_path = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
+        exists = os.path.exists(db_path)
+        size = os.path.getsize(db_path) if exists else 0
+        await inter.response.send_message(
+            f"DB: {db_path}\nExists: **{exists}**\nSize: **{size:,} bytes**",
+            ephemeral=True
+        )
+        if(exists):
+            query = "SELECT * FROM lotteries"
+            cursor = await self._get_db().execute(query)
+            rows = await cursor.fetchall()
+            for row in rows:
+                await inter.response.send_message(
+                    f"DB Lottery Row: {row}",
+                    ephemeral=True
+                )
 async def setup(bot: commands.Bot):
     await bot.add_cog(LotteryDaily(bot))
