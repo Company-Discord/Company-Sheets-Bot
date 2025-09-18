@@ -665,7 +665,7 @@ class LotteryDaily(commands.Cog):
         tables_cursor = await db.execute(tables_query)
         tables = await tables_cursor.fetchall()
         
-        await inter.response.send_message(
+        await inter.followup.send(
             f"📊 **Database Tables Found:** {len(tables)}",
             ephemeral=True
         )
