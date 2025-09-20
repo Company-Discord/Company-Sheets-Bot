@@ -278,14 +278,23 @@ class LotteryDaily(commands.Cog):
             db = await self._get_db()
             now = now_i()
             async with db.execute(
-                "SELECT id, guild_id FROM lotteries WHERE status='open' AND close_ts <= ?",
+                "SELECT id, guild_id, announce_channel_id FROM lotteries WHERE status='open' AND close_ts <= ?",
                 (now,)
             ) as cur:
                 rows = await cur.fetchall()
-            for r in rows:
-                gid = int(r["guild_id"])
-                async with self._lock(gid):
-                    await self._close_and_settle_or_rollover_locked(gid, int(r["id"]), force_rollover=False)
+            
+            if rows:
+                print(f"lottery sweeper: processing {len(rows)} lotteries that need to close")
+                for r in rows:
+                    gid = int(r["guild_id"])
+                    lottery_id = int(r["id"])
+                    channel_id = int(r["announce_channel_id"])
+                    ch = self.bot.get_channel(channel_id)
+                    channel_name = ch.name if ch else f"<#{channel_id}>"
+                    print(f"lottery sweeper: processing lottery {lottery_id} in guild {gid}, channel {channel_name}")
+                    
+                    async with self._lock(gid):
+                        await self._close_and_settle_or_rollover_locked(gid, lottery_id, force_rollover=False)
         except Exception as e:
             print("lottery sweeper error:", e)
 
@@ -309,6 +318,7 @@ class LotteryDaily(commands.Cog):
                     if now < open_ts:
                         continue
                     close_ts = open_ts + 24 * 3600
+                    # close_ts = open_ts + 2 * 60
                     ch_id = await self._last_channel_or_none(gid)
                     if ch_id is None:
                         continue
@@ -351,12 +361,17 @@ class LotteryDaily(commands.Cog):
         db = await self._get_db()
         lot = await (await db.execute("SELECT * FROM lotteries WHERE id=?", (lottery_id,))).fetchone()
         if not lot or lot["status"] != "open":
+            print(f"lottery {lottery_id}: not found or not open (status: {lot['status'] if lot else 'not found'})")
             return
 
+        print(f"lottery {lottery_id}: closing lottery in channel {lot['announce_channel_id']}")
         await db.execute("UPDATE lotteries SET status='drawing' WHERE id=?", (lottery_id,))
         await db.commit()
 
         ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+        if not ch:
+            print(f"lottery {lottery_id}: channel {lot['announce_channel_id']} not found!")
+            return
 
         qty, gross_paid, bonus = await self._pot_components(lottery_id)
         seed = int(lot["seed_amount"])
@@ -458,21 +473,62 @@ class LotteryDaily(commands.Cog):
         now = datetime.now(DAILY_TZ)
         today_open = now.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
         open_ts = int(today_open.timestamp())
-        close_ts = int((today_open + timedelta(days=1)).timestamp())
+        close_ts = int((today_open + timedelta(days=1)).timestamp())  # TODO: revert this for production
+        # close_ts = open_ts + 2 * 60  # 2 minutes for testing
 
         async with self._lock(inter.guild_id):
+            # Check if there's already an open lottery in this channel
+            db = await self._get_db()
+            existing = await (await db.execute(
+                "SELECT id FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=?",
+                (inter.guild_id, ch.id)
+            )).fetchone()
+            
+            if existing:
+                return await inter.followup.send(
+                    f"❌ There's already an open lottery in {ch.mention}. Use `/lottery status` to check current lotteries.",
+                    ephemeral=True
+                )
+            
             await self._open_new_round(inter.guild_id, ch.id, open_ts, close_ts, auto=False)
 
         await inter.followup.send(f"✅ Daily lottery channel set to {ch.mention}. Round opened.", ephemeral=True)
 
     @group.command(name="buy", description="Buy N tickets for the current (daily) lottery.")
     @app_commands.describe(quantity="How many tickets to buy")
-    async def buy_cmd(self, inter: discord.Interaction, quantity: app_commands.Range[int, 1, 1000]):
+    @app_commands.describe(lottery_id="Specific lottery ID to buy into (optional)")
+    async def buy_cmd(self, inter: discord.Interaction, quantity: app_commands.Range[int, 1, 1000], lottery_id: Optional[int] = None):
         await inter.response.defer(ephemeral=True)
         L = self._lock(inter.guild_id)
         async with L:
             db = await self._get_db()
-            lot = await self._current_open(inter.guild_id)
+            
+            # If specific lottery ID provided, use that
+            if lottery_id:
+                lot = await (await db.execute(
+                    "SELECT * FROM lotteries WHERE id=? AND guild_id=? AND status='open'",
+                    (lottery_id, inter.guild_id)
+                )).fetchone()
+                if not lot:
+                    return await inter.followup.send(f"❌ Lottery #{lottery_id} not found or not open.", ephemeral=True)
+            else:
+                # First, try to find a lottery in the current channel
+                lot = await (await db.execute(
+                    "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                    (inter.guild_id, inter.channel.id)
+                )).fetchone()
+                
+                # If no lottery in current channel, fall back to any open lottery
+                if not lot:
+                    lot = await self._current_open(inter.guild_id)
+                    if lot:
+                        ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                        channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                        return await inter.followup.send(
+                            f"❌ No lottery open in this channel.",
+                            ephemeral=True
+                        )
+            
             if not lot or now_i() >= int(lot["close_ts"]):
                 return await inter.followup.send("No open daily lottery to buy into.", ephemeral=True)
 
@@ -513,8 +569,12 @@ class LotteryDaily(commands.Cog):
             )).fetchone()
             user_qty = int(row["quantity"]) if row else q
 
+        ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+        channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+        
         await inter.followup.send(
-            f"✅ Bought **{q}** ticket(s). Your total: **{user_qty:,}**.\n"
+            f"✅ Bought **{q}** ticket(s) for Lottery #{lot['id']} in #{channel_name}.\n"
+            f"Your total: **{user_qty:,}** tickets.\n"
             f"Pot increased by {UNB_ICON} **{pot_delta:,}** "
             f"(includes +{UNB_ICON} {bonus_per_ticket:,} / ticket).",
             ephemeral=True
@@ -524,14 +584,32 @@ class LotteryDaily(commands.Cog):
     async def status_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         db = await self._get_db()
-        lot = await self._current_open(inter.guild_id)
+        
+        # First, try to find a lottery in the current channel
+        lot = await (await db.execute(
+            "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+            (inter.guild_id, inter.channel.id)
+        )).fetchone()
+        
+        # If no lottery in current channel, show any open lottery
         if not lot:
-            bank = await self._bank_get(inter.guild_id)
-            return await inter.followup.send(
-                f"🎟️ Daily Lottery is **idle**. Next round auto-opens at **11:00 AM ET**.\n"
-                f"Rollover bank: {UNB_ICON} **{bank:,}**",
-                ephemeral=True
-            )
+            lot = await self._current_open(inter.guild_id)
+            if not lot:
+                bank = await self._bank_get(inter.guild_id)
+                return await inter.followup.send(
+                    f"🎟️ Daily Lottery is **idle**. Next round auto-opens at **11:00 AM ET**.\n"
+                    f"Rollover bank: {UNB_ICON} **{bank:,}**",
+                    ephemeral=True
+                )
+            else:
+                # Show lottery from different channel
+                ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                return await inter.followup.send(
+                    f"🎟️ **No lottery in this channel.**\n"
+                    f"There's a lottery open in #{channel_name}.",
+                    ephemeral=True
+                )
 
         qty, gross_paid, bonus = await self._pot_components(int(lot["id"]))
         seed = int(lot["seed_amount"])
@@ -553,15 +631,78 @@ class LotteryDaily(commands.Cog):
             ephemeral=True
         )
 
+    @group.command(name="list", description="List all currently open lotteries.")
+    @is_admin_or_manager()
+    async def list_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        
+        # Get all open lotteries for this guild
+        lots = await (await db.execute(
+            "SELECT id, announce_channel_id, open_ts, close_ts FROM lotteries WHERE guild_id=? AND status='open' ORDER BY id ASC",
+            (inter.guild_id,)
+        )).fetchall()
+        
+        if not lots:
+            bank = await self._bank_get(inter.guild_id)
+            return await inter.followup.send(
+                f"🎟️ **No open lotteries** in this server.\n"
+                f"Rollover bank: {UNB_ICON} **{bank:,}**",
+                ephemeral=True
+            )
+        
+        lines = []
+        for lot in lots:
+            ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+            channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+            
+            qty, gross_paid, bonus = await self._pot_components(int(lot["id"]))
+            seed = await self._bank_get(inter.guild_id) if int(lot["id"]) == lots[0]["id"] else 0  # Only show seed for first lottery
+            total_pot = seed + gross_paid + bonus
+            
+            row = await (await db.execute(
+                "SELECT COUNT(*) u FROM tickets WHERE lottery_id=? AND quantity>0",
+                (int(lot["id"]),)
+            )).fetchone()
+            participants = int(row["u"])
+            
+            lines.append(
+                f"**Lottery #{lot['id']}** in #{channel_name}\n"
+                f"• Participants: **{participants}** • Tickets: **{qty:,}**\n"
+                f"• Pot: {UNB_ICON} **{total_pot:,}** • Closes: <t:{int(lot['close_ts'])}:R>"
+            )
+        
+        await inter.followup.send(
+            f"🎟️ **Open Lotteries ({len(lots)}):**\n\n" + "\n\n".join(lines),
+            ephemeral=True
+        )
+
     @group.command(name="draw", description="(Admin) Force close now.")
     @app_commands.default_permissions(administrator=True)
     async def draw_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
             db = await self._get_db()
-            lot = await self._current_open(inter.guild_id)
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
             if not lot:
-                return await inter.followup.send("No open daily lottery to draw.", ephemeral=True)
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to draw.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
+            
             await self._close_and_settle_or_rollover_locked(inter.guild_id, int(lot["id"]), force_rollover=False)
         await inter.followup.send("Processing end of round…", ephemeral=True)
 
@@ -571,9 +712,25 @@ class LotteryDaily(commands.Cog):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
             db = await self._get_db()
-            lot = await self._current_open(inter.guild_id)
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
             if not lot:
-                return await inter.followup.send("No open daily lottery to cancel.", ephemeral=True)
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to cancel.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
 
             await db.execute("UPDATE lotteries SET status='drawing' WHERE id=?", (int(lot["id"]),))
             await db.commit()
@@ -601,11 +758,28 @@ class LotteryDaily(commands.Cog):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
             db = await self._get_db()
-            lot = await self._current_open(inter.guild_id)
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
             if not lot:
-                return await inter.followup.send("No open daily lottery to rollover.", ephemeral=True)
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to rollover.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
+            
             await self._close_and_settle_or_rollover_locked(inter.guild_id, int(lot["id"]), force_rollover=True)
-        await inter.followup.send("✅ Rolled over. Pot carried to tomorrow’s 11:00 AM ET round.", ephemeral=True)
+        await inter.followup.send("✅ Rolled over. Pot carried to tomorrow's 11:00 AM ET round.", ephemeral=True)
 
     @group.command(name="history", description="Show recent daily results.")
     async def history_cmd(self, inter: discord.Interaction, limit: app_commands.Range[int, 1, 10] = 5):
@@ -743,5 +917,38 @@ class LotteryDaily(commands.Cog):
             
         except Exception as e:
             await inter.followup.send(f"❌ Error accessing database: {e}", ephemeral=True)
+
+    @group.command(name="debug", description="(Admin) Debug lottery state for troubleshooting")
+    @app_commands.default_permissions(administrator=True)
+    async def debug_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        
+        # Get all lotteries for this guild
+        all_lots = await (await db.execute(
+            "SELECT id, status, announce_channel_id, open_ts, close_ts FROM lotteries WHERE guild_id=? ORDER BY id DESC LIMIT 10",
+            (inter.guild_id,)
+        )).fetchall()
+        
+        if not all_lots:
+            return await inter.followup.send("No lotteries found for this guild.", ephemeral=True)
+        
+        lines = []
+        for lot in all_lots:
+            ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+            channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+            
+            now = now_i()
+            time_status = "CLOSED" if now >= int(lot["close_ts"]) else "OPEN"
+            
+            lines.append(
+                f"**#{lot['id']}** [{lot['status']}] in #{channel_name}\n"
+                f"• Time: {time_status} • Opens: <t:{int(lot['open_ts'])}:f> • Closes: <t:{int(lot['close_ts'])}:f>"
+            )
+        
+        await inter.followup.send(
+            f"🔍 **Debug Info - Recent Lotteries:**\n\n" + "\n\n".join(lines),
+            ephemeral=True
+        )
 async def setup(bot: commands.Bot):
     await bot.add_cog(LotteryDaily(bot))
