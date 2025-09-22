@@ -13,7 +13,7 @@ import aiosqlite
 from utils import (
     get_unb_client, credit_user, debit_user, get_user_balance
 )
-from unbelievaboat import UnbelievaBoatError
+from unbelievaboat_api import UnbelievaBoatError
 
 class InsufficientFunds(UnbelievaBoatError):
     pass
