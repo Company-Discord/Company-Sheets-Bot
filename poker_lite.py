@@ -11,16 +11,16 @@ import aiosqlite
 
 # =================== Import External APIs ===================
 from utils import (
-    get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
+    get_unb_client, credit_user, debit_user, get_user_balance
 )
-from unbelievaboat_api import UnbelievaBoatError
+from unbelievaboat import UnbelievaBoatError
 
 class InsufficientFunds(UnbelievaBoatError):
     pass
 
 # =================== Config ===================
 CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
-DB_PATH = os.getenv("POKER_DB_PATH", "/data/poker_stats.sqlite3")
+DB_PATH = os.getenv("POKER_DB_PATH", "/data/poker_stats.sqlite3")  # Railway volume
 
 def fmt_tc(n: int) -> str:
     return f"{CURRENCY_EMOTE} {n:,}"
@@ -66,7 +66,7 @@ def eval_hand(cards: List[Card]) -> Tuple[int, List[int]]:
     def is_straight(vals: List[int]) -> Tuple[bool, int]:
         if len(vals) < 5: return (False, 0)
         if max(vals) - min(vals) == 4 and len(vals) == 5: return (True, max(vals))
-        if set(vals) == {14,5,4,3,2}: return (True, 5)  
+        if set(vals) == {14,5,4,3,2}: return (True, 5)  # wheel
         return (False, 0)
 
     is_str, top_st = is_straight(unique_ranks)
@@ -122,9 +122,22 @@ def hand_label(cards: List[Card]) -> str:
 
 # =================== Beginner helpers ===================
 def render_hand_indexed(cards: List[Card]) -> str:
+    """Numbered view for the draw phase."""
     return "  ".join(f"{i+1}) {cards[i]}" for i in range(len(cards)))
 
+def render_hand_inline(cards: List[Card]) -> str:
+    """Clean one-line view for showdown."""
+    return "  ".join(str(c) for c in cards)
+
 def suggested_discards_for_player(cards: List[Card]) -> List[int]:
+    """
+    Simple, friendly heuristic (returns 1-based indices):
+    - Keep Two Pair+ (discard none)
+    - One Pair: keep pair, discard the other 3
+    - 4-to-Flush: discard the off-suit
+    - 4-to-Straight (naive): drop 1 card outside the run
+    - Otherwise keep highest card, discard up to 3
+    """
     cls, _ = eval_hand(cards)
     if cls >= 2:
         return []
@@ -198,12 +211,12 @@ class PokerState:
 class DiscardSelect(discord.ui.Select):
     def __init__(self):
         super().__init__(
-            placeholder="Select up to 3 cards to discard...",
+            placeholder="Select up to 3 cards to discard…",
             min_values=0, max_values=3,
             options=[discord.SelectOption(label=f"Card {i+1}", value=str(i)) for i in range(5)]
         )
     async def callback(self, interaction: discord.Interaction):
-        view: "PokerView" = self.view  
+        view: "PokerView" = self.view  # type: ignore
         if interaction.user.id != view.state.user_id:
             return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
         view.selected = [int(v) for v in self.values]
@@ -216,6 +229,7 @@ class PokerView(discord.ui.View):
         self.cog = cog
         self.selected: List[int] = []
         self.result_text: Optional[str] = None
+        self.outcome: int = 0
         self.select = DiscardSelect()
         self.add_item(self.select)
 
@@ -243,16 +257,17 @@ class PokerView(discord.ui.View):
             return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
         if self.state.locked or self.state.done: return await interaction.response.defer()
         self.state.done = True; self.state.locked = True
+        self.outcome = -1
         self.clear_items()
         self.result_text = f"**You folded.** You lose {fmt_tc(self.state.bet)}."
-        await interaction.response.edit_message(view=self, embed=self._fold_embed())
+        await interaction.response.edit_message(view=self, embed=self._showdown_embed())
         # record fold as a loss
         try:
             await self.cog._update_stats(
-                guild_id=self.message.guild.id,             
+                guild_id=self.message.guild.id,  # type: ignore
                 user_id=self.state.user_id,
                 bet=self.state.bet,
-                outcome=-1                                  # loss
+                outcome=-1
             )
         except Exception:
             pass
@@ -268,6 +283,7 @@ class PokerView(discord.ui.View):
         self.state.dealer_draw()
         outcome = self.state.showdown()
         self.state.done = True
+        self.outcome = outcome
 
         # Payouts (escrow: bet was already debited)
         bet = self.state.bet
@@ -286,7 +302,7 @@ class PokerView(discord.ui.View):
         except UnbelievaBoatError as e:
             self.result_text = f"⚠️ Payout error: {e}"
 
-        # Record result: win=+1, loss=-1, push=0; net = +bet / -bet / 0
+        # Record stats
         try:
             await self.cog._update_stats(
                 guild_id=guild_id, user_id=user_id, bet=bet, outcome=outcome
@@ -301,23 +317,23 @@ class PokerView(discord.ui.View):
             msg = await self.message.channel.fetch_message(self.message.id)  # type: ignore
             await msg.edit(view=self, embed=self._showdown_embed())
 
-    def _fold_embed(self) -> discord.Embed:
-        e = discord.Embed(title="Poker-Lite — Folded", color=0xC0392B)
-        e.add_field(name="Your Hand (numbered)", value=render_hand_indexed(self.state.player), inline=False)
-        e.add_field(name="Dealer Hand", value="🂠 🂠 🂠 🂠 🂠", inline=False)
-        e.set_footer(text=self.result_text or "")
-        return e
-
     def _showdown_embed(self) -> discord.Embed:
-        e = discord.Embed(title="Poker-Lite — Showdown", color=0x2ECC71)
+        # Color by outcome: green win, red loss, gold push/fold
+        color = discord.Color.gold()
+        if self.outcome > 0:
+            color = discord.Color.green()
+        elif self.outcome < 0:
+            color = discord.Color.red()
+
+        e = discord.Embed(title="Poker-Lite — Showdown", color=color)
         e.add_field(
             name=f"Your Hand — {hand_label(self.state.player)}",
-            value=render_hand_indexed(self.state.player),
+            value=render_hand_inline(self.state.player),
             inline=False
         )
         e.add_field(
             name=f"Dealer — {hand_label(self.state.dealer)}",
-            value=" ".join(str(c) for c in self.state.dealer),
+            value=render_hand_inline(self.state.dealer),
             inline=False
         )
         e.add_field(name="Bet", value=fmt_tc(self.state.bet))
@@ -446,7 +462,7 @@ class PokerLite(commands.Cog):
 
         # Beginner tips
         label = hand_label(state.player)
-        sugg = suggested_discards_for_player(state.player)  
+        sugg = suggested_discards_for_player(state.player)  # 1-based
         tips = (
             f"**Hand strength:** {label}\n"
             f"**Suggested discards:** {fmt_indices(sugg)} (optional)\n"
@@ -472,7 +488,6 @@ class PokerLite(commands.Cog):
         finally:
             self._unlock(user.id, channel.id)
 
-    # ---- Public stats command ----
     @app_commands.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -508,7 +523,6 @@ class PokerLite(commands.Cog):
         emb.add_field(name="Avg Bet", value=fmt_tc(int(avg_bet)), inline=True)
         await interaction.response.send_message(embed=emb, ephemeral=False)
 
-    # ---- Public leaderboard command ----
     @app_commands.command(name="poker_leaderboard", description="Show the Poker-Lite leaderboard for this server.")
     @app_commands.describe(
         metric="Rank by 'net' (profit) or 'wins' (default: net)",
