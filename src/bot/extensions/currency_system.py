@@ -18,6 +18,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 
+from src.utils.utils import is_admin_or_manager
+
 # ================= Configuration =================
 CURRENCY_EMOJI = os.getenv("CURRENCY_EMOJI", "💰")
 DATABASE_PATH = "data/databases/currency.db"
@@ -606,6 +608,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Slut Command =================
     @economy.command(name="slut", description="High-risk earning activity with potential consequences")
+    @is_admin_or_manager()
     async def slut(self, interaction: discord.Interaction):
         """Slut command - high risk, high reward."""
         user_id = interaction.user.id
@@ -694,6 +697,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Crime Command =================
     @economy.command(name="crime", description="Criminal activities with success/failure mechanics")
+    @is_admin_or_manager()
     async def crime(self, interaction: discord.Interaction):
         """Crime command - criminal activities with consequences."""
         user_id = interaction.user.id
@@ -788,6 +792,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Rob Command =================
     @economy.command(name="rob", description="Steal money from another user")
+    @is_admin_or_manager()
     @app_commands.describe(target="The user you want to rob")
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
         """Rob command - steal money from another user."""
@@ -909,6 +914,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Balance Command =================
     @economy.command(name="balance", description="Check your balance and stats")
+    @is_admin_or_manager()
     @app_commands.describe(user="Check another user's balance (optional)")
     async def balance(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
         """Check user's balance and statistics."""
@@ -953,6 +959,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Leaderboard Command =================
     @economy.command(name="leaderboard", description="View the server's money leaderboard")
+    @is_admin_or_manager()
     @app_commands.describe(page="Page number to view (default: 1)")
     async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
         """Show the server's leaderboard."""
@@ -1002,6 +1009,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Give Command =================
     @economy.command(name="give", description="Give money to another user")
+    @is_admin_or_manager()
     @app_commands.describe(user="The user to give money to", amount="Amount to give")
     async def give(self, interaction: discord.Interaction, user: discord.Member, amount: int):
         """Give money to another user."""
@@ -1073,6 +1081,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Deposit Command =================
     @economy.command(name="deposit", description="Move money from cash to bank")
+    @is_admin_or_manager()
     @app_commands.describe(amount="Amount to deposit (or 'all' for all cash)")
     async def deposit(self, interaction: discord.Interaction, amount: str):
         """Deposit money from cash to bank."""
@@ -1140,6 +1149,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Withdraw Command =================
     @economy.command(name="withdraw", description="Move money from bank to cash")
+    @is_admin_or_manager()
     @app_commands.describe(amount="Amount to withdraw (or 'all' for all bank)")
     async def withdraw(self, interaction: discord.Interaction, amount: str):
         """Withdraw money from bank to cash."""
@@ -1207,6 +1217,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Admin Commands =================
     @admin.command(name="add-money", description="Add money to a user's account")
+    @is_admin_or_manager()
     @app_commands.describe(user="The user to add money to", amount="Amount to add", location="Where to add the money")
     @app_commands.choices(location=[
         app_commands.Choice(name="Cash", value="cash"),
@@ -1259,6 +1270,7 @@ class CurrencySystem(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     @admin.command(name="remove-money", description="Remove money from a user's account")
+    @is_admin_or_manager()
     @app_commands.describe(user="The user to remove money from", amount="Amount to remove", location="Where to remove the money from")
     @app_commands.choices(location=[
         app_commands.Choice(name="Cash", value="cash"),
@@ -1324,6 +1336,7 @@ class CurrencySystem(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     @admin.command(name="reset-balance", description="Reset a user's balance to zero")
+    @is_admin_or_manager()
     @app_commands.describe(user="The user to reset")
     async def reset_balance(self, interaction: discord.Interaction, user: discord.Member):
         """Reset a user's balance to zero (admin only)."""
@@ -1363,6 +1376,7 @@ class CurrencySystem(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     @admin.command(name="economy-stats", description="View economy statistics")
+    @is_admin_or_manager()
     async def economy_stats(self, interaction: discord.Interaction):
         """View economy statistics (admin only)."""
         # Check permissions
