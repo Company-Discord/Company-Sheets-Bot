@@ -27,7 +27,7 @@ def fmt_tc(n: int) -> str:
 
 # =================== Cards / Deck ===================
 SUITS = ["♠", "♥", "♦", "♣"]
-RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
+RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
 RANK_VAL = {r: i for i, r in enumerate(RANKS, start=2)}  # 2..14
 RANK_WORD = {
     2:"Twos",3:"Threes",4:"Fours",5:"Fives",6:"Sixes",7:"Sevens",8:"Eights",
