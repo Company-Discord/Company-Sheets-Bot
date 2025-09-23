@@ -13,7 +13,7 @@ import aiosqlite
 from utils import (
     get_unb_client, credit_user, debit_user, get_user_balance
 )
-from unbelievaboat_api import UnbelievaBoatError
+from unbelievaboat_api import UnbelievaBoatError  
 
 class InsufficientFunds(UnbelievaBoatError):
     pass
@@ -127,7 +127,7 @@ def render_hand_inline(cards: List[Card]) -> str:
 
 def suggested_discards_for_player(cards: List[Card]) -> List[int]:
     """
-    Simple heuristic (returns 1-based indices):
+    Simple heuristic (1-based indices):
     - Keep Two Pair+ (discard none)
     - One Pair: keep pair, discard the other 3
     - 4-to-Flush: discard the off-suit
@@ -209,8 +209,8 @@ class DiscardSelect(discord.ui.Select):
         # Show actual card faces; keep 0–4 as values for internal use
         options = [
             discord.SelectOption(
-                label=str(cards[i]),           # e.g., "Q♦"
-                value=str(i),                  # internal index
+                label=str(cards[i]),           
+                value=str(i),                  
                 description=f"Discard card #{i+1}"
             )
             for i in range(5)
@@ -353,8 +353,7 @@ class PokerLite(commands.Cog):
     """Heads-up 5-card draw vs dealer using UnbelievaBoat balance, with stats & leaderboard."""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.active_by_user: Dict[int, int] = {}
-        self.active_by_channel: Dict[int, int] = {}
+        self.active_by_user: Dict[int, int] = {}   # per-user lock only
         self.db: Optional[aiosqlite.Connection] = None
 
     # ----- DB helpers -----
@@ -411,14 +410,14 @@ class PokerLite(commands.Cog):
             await self.db.close()
             self.db = None
 
-    # ----- concurrency helpers -----
-    def _locked(self, user_id: int, channel_id: int) -> Optional[str]:
-        if user_id in self.active_by_user: return "You already have a Poker-Lite hand in progress."
-        if channel_id in self.active_by_channel: return "There’s already an active Poker-Lite hand in this channel."
+    # ----- per-user lock helpers -----
+    def _locked(self, user_id: int) -> Optional[str]:
+        if user_id in self.active_by_user:
+            return "You already have a Poker-Lite hand in progress."
         return None
-    def _unlock(self, user_id: int, channel_id: int):
+
+    def _unlock(self, user_id: int):
         self.active_by_user.pop(user_id, None)
-        self.active_by_channel.pop(channel_id, None)
 
     # ----- Commands -----
     @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
@@ -441,8 +440,9 @@ class PokerLite(commands.Cog):
         if channel is None:
             return await interaction.response.send_message("Channel not found.", ephemeral=True)
 
-        msg = self._locked(user.id, channel.id)
-        if msg: return await interaction.response.send_message(msg, ephemeral=True)
+        msg = self._locked(user.id)
+        if msg:
+            return await interaction.response.send_message(msg, ephemeral=True)
 
         if bet <= 0:
             return await interaction.response.send_message(
@@ -487,14 +487,13 @@ class PokerLite(commands.Cog):
         view = PokerView(state, self, timeout=60)
         await interaction.response.send_message(embed=e, view=view)
         sent = await interaction.original_response()
-        self.active_by_user[user.id] = sent.id
-        self.active_by_channel[channel.id] = sent.id
-        view.message = sent  # set for later edits
+        self.active_by_user[user.id] = sent.id      # per-user lock only
+        view.message = sent                          
 
         try:
             await view.wait()
         finally:
-            self._unlock(user.id, channel.id)
+            self._unlock(user.id)
 
     @app_commands.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
