@@ -121,17 +121,13 @@ def hand_label(cards: List[Card]) -> str:
     return name
 
 # =================== Beginner helpers ===================
-def render_hand_indexed(cards: List[Card]) -> str:
-    """Numbered view for the draw phase."""
-    return "  ".join(f"{i+1}) {cards[i]}" for i in range(len(cards)))
-
 def render_hand_inline(cards: List[Card]) -> str:
-    """Clean one-line view for showdown."""
+    """Clean one-line view for both draw phase and showdown."""
     return "  ".join(str(c) for c in cards)
 
 def suggested_discards_for_player(cards: List[Card]) -> List[int]:
     """
-    Simple, friendly heuristic (returns 1-based indices):
+    Simple heuristic (returns 1-based indices):
     - Keep Two Pair+ (discard none)
     - One Pair: keep pair, discard the other 3
     - 4-to-Flush: discard the off-suit
@@ -209,12 +205,23 @@ class PokerState:
 
 # =================== UI ===================
 class DiscardSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, cards: List[Card]):
+        # Show actual card faces; keep 0–4 as values for internal use
+        options = [
+            discord.SelectOption(
+                label=str(cards[i]),           # e.g., "Q♦"
+                value=str(i),                  # internal index
+                description=f"Discard card #{i+1}"
+            )
+            for i in range(5)
+        ]
         super().__init__(
             placeholder="Select up to 3 cards to discard…",
-            min_values=0, max_values=3,
-            options=[discord.SelectOption(label=f"Card {i+1}", value=str(i)) for i in range(5)]
+            min_values=0,
+            max_values=3,
+            options=options,
         )
+
     async def callback(self, interaction: discord.Interaction):
         view: "PokerView" = self.view  # type: ignore
         if interaction.user.id != view.state.user_id:
@@ -230,8 +237,9 @@ class PokerView(discord.ui.View):
         self.selected: List[int] = []
         self.result_text: Optional[str] = None
         self.outcome: int = 0
-        self.select = DiscardSelect()
+        self.select = DiscardSelect(state.player)  # show card faces
         self.add_item(self.select)
+        self.message: Optional[discord.Message] = None  # set after send
 
     async def on_timeout(self):
         if not self.state.done:
@@ -314,8 +322,8 @@ class PokerView(discord.ui.View):
         if interaction and not interaction.response.is_done():
             await interaction.response.edit_message(view=self, embed=self._showdown_embed())
         else:
-            msg = await self.message.channel.fetch_message(self.message.id)  # type: ignore
-            await msg.edit(view=self, embed=self._showdown_embed())
+            if self.message is not None:
+                await self.message.edit(view=self, embed=self._showdown_embed())
 
     def _showdown_embed(self) -> discord.Embed:
         # Color by outcome: green win, red loss, gold push/fold
@@ -462,15 +470,15 @@ class PokerLite(commands.Cog):
 
         # Beginner tips
         label = hand_label(state.player)
-        sugg = suggested_discards_for_player(state.player)  # 1-based
+        sugg = suggested_discards_for_player(state.player)  # 1-based indices
         tips = (
             f"**Hand strength:** {label}\n"
             f"**Suggested discards:** {fmt_indices(sugg)} (optional)\n"
-            f"Use the dropdown to select up to 3 card numbers, then press **Draw & Showdown**."
+            f"Use the dropdown to select up to 3 cards by face, then press **Draw & Showdown**."
         )
 
         e = discord.Embed(title="Poker-Lite — Draw Phase", color=0x3498DB)
-        e.add_field(name="Your Hand (numbered)", value=render_hand_indexed(state.player), inline=False)
+        e.add_field(name="Your Hand", value=render_hand_inline(state.player), inline=False)
         e.add_field(name="Dealer Hand", value="🂠 🂠 🂠 🂠 🂠", inline=False)
         e.add_field(name="Bet", value=fmt_tc(bet))
         e.add_field(name="Tips", value=tips, inline=False)
@@ -481,7 +489,7 @@ class PokerLite(commands.Cog):
         sent = await interaction.original_response()
         self.active_by_user[user.id] = sent.id
         self.active_by_channel[channel.id] = sent.id
-        view.message = sent  # type: ignore
+        view.message = sent  # set for later edits
 
         try:
             await view.wait()
