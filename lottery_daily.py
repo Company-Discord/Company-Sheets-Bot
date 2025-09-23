@@ -1,579 +1,953 @@
-# poker_lite.py
-import os
-import random
-from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+# lottery_daily.py — Daily Lottery (UnbelievaBoat) with House mechanic (ratio hidden from users)
 
-import discord
-from discord import app_commands
-from discord.ext import commands
+import os
+import math
+import time
+import random
+import asyncio
+from typing import Optional, Dict, List, Tuple
+import pytz
+from datetime import datetime, timedelta
+
 import aiosqlite
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+
+# =================== Config (env) ===================
+
+UNB_ICON = os.getenv("CURRENCY_EMOTE", "💵")
+
+DB_PATH = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
+
+DEFAULT_TICKET_PRICE = int(os.getenv("LOTTERY_TICKET_PRICE", "100000"))          # 100k
+DEFAULT_BONUS_PER_TICKET = int(os.getenv("LOTTERY_BONUS_PER_TICKET", "50000"))   # +50k per ticket (to pot only)
+DEFAULT_MIN_PARTICIPANTS = int(os.getenv("LOTTERY_MIN_PARTICIPANTS", "3"))
+DEFAULT_SPLIT_FIRST_BPS = int(os.getenv("LOTTERY_SPLIT_FIRST_BPS", "7000"))      # 7000 = 70% to 1st
+
+# House odds as "player:house" weights. Example: "4:1" (~20% house), "1:3" (~75% house; ~25% player day)
+HOUSE_RATIO_STR = os.getenv("LOTTERY_HOUSE_RATIO", "4:1")
+
+# Fixed daily schedule
+DAILY_TZ = pytz.timezone("America/New_York")
+DAILY_HOUR = 11
+DAILY_MINUTE = 0
+
 
 # =================== Import External APIs ===================
+
+# Import UnbelievaBoat utilities
 from utils import (
-    get_unb_client, credit_user, debit_user, get_user_balance
+    get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
 )
 from unbelievaboat_api import UnbelievaBoatError
 
+# Custom lottery exceptions
 class InsufficientFunds(UnbelievaBoatError):
     pass
 
-# =================== Config ===================
-CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
-DB_PATH = os.getenv("POKER_DB_PATH", "/data/poker_stats.sqlite3")  # Railway volume
 
-def fmt_tc(n: int) -> str:
-    return f"{CURRENCY_EMOTE} {n:,}"
 
-# =================== Cards / Deck ===================
-SUITS = ["♠", "♥", "♦", "♣"]
-RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A"]
-RANK_VAL = {r: i for i, r in enumerate(RANKS, start=2)}  # 2..14
-RANK_WORD = {
-    2:"Twos",3:"Threes",4:"Fours",5:"Fives",6:"Sixes",7:"Sevens",8:"Eights",
-    9:"Nines",10:"Tens",11:"Jacks",12:"Queens",13:"Kings",14:"Aces"
-}
-RANK_SINGLE = {
-    2:"Two",3:"Three",4:"Four",5:"Five",6:"Six",7:"Seven",8:"Eight",
-    9:"Nine",10:"Ten",11:"Jack",12:"Queen",13:"King",14:"Ace"
-}
+# =================== DB Schema ===================
 
-@dataclass(frozen=True)
-class Card:
-    rank: str
-    suit: str
-    def __str__(self) -> str: return f"{self.rank}{self.suit}"
+SCHEMA = """
+PRAGMA journal_mode=WAL;
 
-def new_deck() -> List[Card]:
-    return [Card(r, s) for s in SUITS for r in RANKS]
+CREATE TABLE IF NOT EXISTS lotteries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id INTEGER NOT NULL,
+  status TEXT NOT NULL,                  -- 'open' | 'drawing' | 'settled' | 'cancelled' | 'rolled'
+  ticket_price INTEGER NOT NULL,
+  bonus_per_ticket INTEGER NOT NULL,
+  min_participants INTEGER NOT NULL,
+  split_first_bps INTEGER NOT NULL,
+  seed_amount INTEGER NOT NULL,
+  open_ts INTEGER NOT NULL,
+  close_ts INTEGER NOT NULL,
+  announce_channel_id INTEGER NOT NULL
+);
 
-def deal(deck: List[Card], n: int) -> List[Card]:
-    return [deck.pop() for _ in range(n)]
+CREATE INDEX IF NOT EXISTS idx_lotteries_open ON lotteries(guild_id, status);
 
-# =================== Hand Evaluator ===================
-# Returns (class, tiebreakers). Higher tuple wins.
-# 8 SF, 7 Quads, 6 FH, 5 Flush, 4 Straight, 3 Trips, 2 Two Pair, 1 One Pair, 0 High
-def eval_hand(cards: List[Card]) -> Tuple[int, List[int]]:
-    ranks = sorted((RANK_VAL[c.rank] for c in cards), reverse=True)
-    suits = [c.suit for c in cards]
-    counts: Dict[int, int] = {}
-    for v in ranks:
-        counts[v] = counts.get(v, 0) + 1
-    groups = sorted(((cnt, v) for v, cnt in counts.items()), key=lambda x: (x[0], x[1]), reverse=True)
-    is_flush = len(set(suits)) == 1
+CREATE TABLE IF NOT EXISTS tickets (
+  lottery_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL,
+  amount_paid INTEGER NOT NULL,
+  PRIMARY KEY (lottery_id, user_id)
+);
 
-    unique_ranks = sorted(set(ranks), reverse=True)
-    def is_straight(vals: List[int]) -> Tuple[bool, int]:
-        if len(vals) < 5: return (False, 0)
-        if max(vals) - min(vals) == 4 and len(vals) == 5: return (True, max(vals))
-        if set(vals) == {14,5,4,3,2}: return (True, 5)  # wheel
-        return (False, 0)
+CREATE TABLE IF NOT EXISTS winners (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lottery_id INTEGER NOT NULL,
+  place INTEGER NOT NULL,                -- 1 or 2
+  user_id INTEGER NOT NULL,
+  prize_amount INTEGER NOT NULL,
+  draw_ts INTEGER NOT NULL
+);
 
-    is_str, top_st = is_straight(unique_ranks)
+CREATE TABLE IF NOT EXISTS rollover_bank (
+  guild_id INTEGER PRIMARY KEY,
+  amount INTEGER NOT NULL
+);
+"""
 
-    if is_flush and is_str: return (8, [top_st])
-    if groups[0][0] == 4:
-        quad = groups[0][1]; kick = max(v for v in ranks if v != quad)
-        return (7, [quad, kick])
-    if groups[0][0] == 3 and groups[1][0] >= 2:
-        return (6, [groups[0][1], groups[1][1]])
-    if is_flush: return (5, sorted(ranks, reverse=True))
-    if is_str:   return (4, [top_st])
-    if groups[0][0] == 3:
-        triple = groups[0][1]
-        kickers = sorted([v for v in ranks if v != triple], reverse=True)
-        return (3, [triple] + kickers)
-    if groups[0][0] == 2 and groups[1][0] == 2:
-        pair_hi = max(groups[0][1], groups[1][1])
-        pair_lo = min(groups[0][1], groups[1][1])
-        kicker = max(v for v in ranks if v != pair_hi and v != pair_lo)
-        return (2, [pair_hi, pair_lo, kicker])
-    if groups[0][0] == 2:
-        pair = groups[0][1]
-        kickers = sorted([v for v in ranks if v != pair], reverse=True)
-        return (1, [pair] + kickers)
-    return (0, sorted(ranks, reverse=True))
 
-HAND_NAMES = {
-    8:"Straight Flush",7:"Four of a Kind",6:"Full House",5:"Flush",
-    4:"Straight",3:"Three of a Kind",2:"Two Pair",1:"One Pair",0:"High Card"
-}
+# =================== Helpers ===================
 
-def hand_label(cards: List[Card]) -> str:
-    """Human-friendly label like 'One Pair (Sevens)' or 'High Card (Ace)'."""
-    cls, tb = eval_hand(cards)
-    name = HAND_NAMES[cls]
-    if cls == 1:
-        return f"{name} ({RANK_WORD[tb[0]]})"
-    if cls == 2:
-        hi, lo, _ = tb
-        return f"{name} ({RANK_WORD[hi]} & {RANK_WORD[lo]})"
-    if cls == 3:
-        return f"{name} ({RANK_WORD[tb[0]]})"
-    if cls in (4, 8):
-        hi = tb[0]
-        return f"{name} ({'Five' if hi==5 else RANK_SINGLE[hi]}-high)"
-    if cls in (5, 0):
-        hi = max(RANK_VAL[c.rank] for c in cards)
-        return f"{name} ({RANK_SINGLE[hi]}-high)"
-    if cls == 7:
-        return f"{name} ({RANK_WORD[tb[0]]})"
-    return name
+def now_i() -> int:
+    return int(time.time())
 
-# =================== Beginner helpers ===================
-def render_hand_inline(cards: List[Card]) -> str:
-    """Clean one-line view for both draw phase and showdown."""
-    return "  ".join(str(c) for c in cards)
 
-def suggested_discards_for_player(cards: List[Card]) -> List[int]:
-    """
-    Simple heuristic (returns 1-based indices):
-    - Keep Two Pair+ (discard none)
-    - One Pair: keep pair, discard the other 3
-    - 4-to-Flush: discard the off-suit
-    - 4-to-Straight (naive): drop 1 card outside the run
-    - Otherwise keep highest card, discard up to 3
-    """
-    cls, _ = eval_hand(cards)
-    if cls >= 2:
-        return []
-    counts: Dict[int, int] = {}
-    for c in cards:
-        v = RANK_VAL[c.rank]; counts[v] = counts.get(v, 0) + 1
-    pair_val = next((v for v, cnt in counts.items() if cnt == 2), None)
-    if pair_val:
-        return [i+1 for i, c in enumerate(cards) if RANK_VAL[c.rank] != pair_val][:3]
-    suit_counts: Dict[str, int] = {}
-    for c in cards:
-        suit_counts[c.suit] = suit_counts.get(c.suit, 0) + 1
-    tgt = next((s for s, cnt in suit_counts.items() if cnt == 4), None)
-    if tgt:
-        return [i+1 for i, c in enumerate(cards) if c.suit != tgt]
-    vals = sorted({RANK_VAL[c.rank] for c in cards})
-    for start in range(2, 11):
-        need = set(range(start, start + 5))
-        if len(need - set(vals)) == 1:
-            out = [i for i, c in enumerate(cards) if RANK_VAL[c.rank] not in need][:1]
-            return [i+1 for i in out]
-    keep = max(range(5), key=lambda i: RANK_VAL[cards[i].rank])
-    return [i+1 for i in range(5) if i != keep][:3]
+def weighted_draw_two(entries: List[Tuple[int, int]]) -> Tuple[int, Optional[int]]:
+    """Weighted without replacement."""
+    total = sum(q for _, q in entries)
+    rng = random.SystemRandom()
 
-def fmt_indices(idxs_1based: List[int]) -> str:
-    return "none" if not idxs_1based else ", ".join(str(i) for i in idxs_1based)
+    # Winner 1
+    r1 = rng.randrange(1, total + 1)
+    cum = 0
+    w1 = None
+    for uid, qty in entries:
+        cum += qty
+        if r1 <= cum:
+            w1 = uid
+            break
 
-# =================== Dealer AI ===================
-def dealer_discards(hand: List[Card]) -> List[int]:
-    cls, _ = eval_hand(hand)
-    if cls >= 2: return []
-    counts = {}
-    for c in hand:
-        v = RANK_VAL[c.rank]; counts[v] = counts.get(v, 0) + 1
-    pair_val = next((v for v, cnt in counts.items() if cnt == 2), None)
-    if pair_val:
-        return [i for i, c in enumerate(hand) if RANK_VAL[c.rank] != pair_val][:3]
-    suit_counts: Dict[str, int] = {}
-    for c in hand:
-        suit_counts[c.suit] = suit_counts.get(c.suit, 0) + 1
-    tgt = next((s for s, cnt in suit_counts.items() if cnt == 4), None)
-    if tgt:
-        return [i for i, c in enumerate(hand) if c.suit != tgt]
-    vals = sorted({RANK_VAL[c.rank] for c in hand})
-    for start in range(2, 11):
-        need = set(range(start, start + 5))
-        if len(need - set(vals)) == 1:
-            return [i for i, c in enumerate(hand) if RANK_VAL[c.rank] not in need][:1]
-    keep = max(range(5), key=lambda i: RANK_VAL[hand[i].rank])
-    return [i for i in range(5) if i != keep][:3]
+    # Winner 2 (remove w1)
+    entries2 = [(uid, qty) for uid, qty in entries if uid != w1]
+    total2 = sum(q for _, q in entries2)
+    if total2 <= 0:
+        return (w1, None)
 
-# =================== State ===================
-class PokerState:
-    def __init__(self, user_id: int, bet: int, deck: List[Card]):
-        self.user_id = user_id
-        self.bet = bet
-        self.deck = deck
-        self.player = deal(deck, 5)
-        self.dealer = deal(deck, 5)
-        self.locked = False
-        self.done = False
-    def player_discard(self, idxs: List[int]):
-        for i in sorted(idxs): self.player[i] = self.deck.pop()
-    def dealer_draw(self):
-        for i in sorted(dealer_discards(self.dealer)): self.dealer[i] = self.deck.pop()
-    def showdown(self) -> int:
-        a, b = eval_hand(self.player), eval_hand(self.dealer)
-        return 1 if a > b else (-1 if a < b else 0)
+    r2 = rng.randrange(1, total2 + 1)
+    cum = 0
+    w2 = None
+    for uid, qty in entries2:
+        cum += qty
+        if r2 <= cum:
+            w2 = uid
+            break
 
-# =================== UI ===================
-class DiscardSelect(discord.ui.Select):
-    def __init__(self, cards: List[Card]):
-        # Show actual card faces; keep 0–4 as values for internal use
-        options = [
-            discord.SelectOption(
-                label=str(cards[i]),           # e.g., "Q♦"
-                value=str(i),                  # internal index
-                description=f"Discard card #{i+1}"
-            )
-            for i in range(5)
-        ]
-        super().__init__(
-            placeholder="Select up to 3 cards to discard…",
-            min_values=0,
-            max_values=3,
-            options=options,
-        )
+    return (w1, w2)
 
-    async def callback(self, interaction: discord.Interaction):
-        view: "PokerView" = self.view  # type: ignore
-        if interaction.user.id != view.state.user_id:
-            return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
-        view.selected = [int(v) for v in self.values]
-        await interaction.response.defer()
 
-class PokerView(discord.ui.View):
-    def __init__(self, state: PokerState, cog: "PokerLite", timeout: int = 60):
-        super().__init__(timeout=timeout)
-        self.state = state
-        self.cog = cog
-        self.selected: List[int] = []
-        self.result_text: Optional[str] = None
-        self.outcome: int = 0
-        self.select = DiscardSelect(state.player)  # show card faces
-        self.add_item(self.select)
-        self.message: Optional[discord.Message] = None  # set after send
+def _parse_house_ratio(s: str) -> tuple[int, int]:
+    """Parse 'player:house' into integer weights; default to 4:1 if invalid."""
+    try:
+        p, h = s.split(":")
+        p = max(1, int(p.strip()))
+        h = max(0, int(h.strip()))
+        return (p, h)
+    except Exception:
+        return (4, 1)
 
-    async def on_timeout(self):
-        if not self.state.done:
-            try: await self.finish(None)
-            except: pass
 
-    @discord.ui.button(label="Draw & Showdown", style=discord.ButtonStyle.primary)
-    async def draw_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.state.user_id:
-            return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
-        await self.finish(interaction)
+HOUSE_PLAYER_W, HOUSE_HOUSE_W = _parse_house_ratio(HOUSE_RATIO_STR)
 
-    @discord.ui.button(label="Stand Pat", style=discord.ButtonStyle.secondary)
-    async def stand_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.state.user_id:
-            return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
-        self.selected = []
-        await self.finish(interaction)
 
-    @discord.ui.button(label="Fold", style=discord.ButtonStyle.danger)
-    async def fold_button(self, interaction: discord.Interaction, _: discord.ui.Button):
-        if interaction.user.id != self.state.user_id:
-            return await interaction.response.send_message("This isn’t your hand.", ephemeral=True)
-        if self.state.locked or self.state.done: return await interaction.response.defer()
-        self.state.done = True; self.state.locked = True
-        self.outcome = -1
-        self.clear_items()
-        self.result_text = f"**You folded.** You lose {fmt_tc(self.state.bet)}."
-        await interaction.response.edit_message(view=self, embed=self._showdown_embed())
-        # record fold as a loss
-        try:
-            await self.cog._update_stats(
-                guild_id=self.message.guild.id,  # type: ignore
-                user_id=self.state.user_id,
-                bet=self.state.bet,
-                outcome=-1
-            )
-        except Exception:
-            pass
+def _house_tickets_for(qty: int) -> int:
+    """Add floor(qty * (house/player)) house tickets."""
+    if qty <= 0 or HOUSE_HOUSE_W <= 0:
+        return 0
+    return math.floor(qty * (HOUSE_HOUSE_W / HOUSE_PLAYER_W))
 
-    async def finish(self, interaction: Optional[discord.Interaction]):
-        if self.state.locked or self.state.done:
-            if interaction: await interaction.response.defer()
-            return
-        self.state.locked = True
 
-        # Draws
-        self.state.player_discard(self.selected)
-        self.state.dealer_draw()
-        outcome = self.state.showdown()
-        self.state.done = True
-        self.outcome = outcome
+def next_11am_et(after_ts: Optional[int] = None) -> int:
+    if after_ts is None:
+        base = datetime.now(DAILY_TZ)
+    else:
+        base = datetime.fromtimestamp(after_ts, DAILY_TZ)
+    candidate = base.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
+    if base >= candidate:
+        candidate = candidate + timedelta(days=1)
+    return int(candidate.timestamp())
 
-        # Payouts (escrow: bet was already debited)
-        bet = self.state.bet
-        guild_id = self.message.guild.id  # type: ignore
-        user_id = self.state.user_id
-
-        try:
-            if outcome > 0:
-                await credit_user(guild_id, user_id, bet * 2, reason="Poker-Lite win")
-                self.result_text = f"**You win!** Payout {fmt_tc(bet * 2)}."
-            elif outcome == 0:
-                await credit_user(guild_id, user_id, bet, reason="Poker-Lite push")
-                self.result_text = f"**Push.** Your bet {fmt_tc(bet)} is returned."
-            else:
-                self.result_text = f"**Dealer wins.** You lose {fmt_tc(bet)}."
-        except UnbelievaBoatError as e:
-            self.result_text = f"⚠️ Payout error: {e}"
-
-        # Record stats
-        try:
-            await self.cog._update_stats(
-                guild_id=guild_id, user_id=user_id, bet=bet, outcome=outcome
-            )
-        except Exception:
-            pass
-
-        self.clear_items()
-        if interaction and not interaction.response.is_done():
-            await interaction.response.edit_message(view=self, embed=self._showdown_embed())
-        else:
-            if self.message is not None:
-                await self.message.edit(view=self, embed=self._showdown_embed())
-
-    def _showdown_embed(self) -> discord.Embed:
-        # Color by outcome: green win, red loss, gold push/fold
-        color = discord.Color.gold()
-        if self.outcome > 0:
-            color = discord.Color.green()
-        elif self.outcome < 0:
-            color = discord.Color.red()
-
-        e = discord.Embed(title="Poker-Lite — Showdown", color=color)
-        e.add_field(
-            name=f"Your Hand — {hand_label(self.state.player)}",
-            value=render_hand_inline(self.state.player),
-            inline=False
-        )
-        e.add_field(
-            name=f"Dealer — {hand_label(self.state.dealer)}",
-            value=render_hand_inline(self.state.dealer),
-            inline=False
-        )
-        e.add_field(name="Bet", value=fmt_tc(self.state.bet))
-        e.set_footer(text=self.result_text or "")
-        return e
 
 # =================== Cog ===================
-class PokerLite(commands.Cog):
-    """Heads-up 5-card draw vs dealer using UnbelievaBoat balance, with stats & leaderboard."""
+
+class LotteryDaily(commands.Cog):
+    """Daily UnbelievaBoat Lottery with rollover and House mechanic (ratio hidden)."""
+
+    group = app_commands.Group(name="lottery", description="Daily UnbelievaBoat Lottery")
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.active_by_user: Dict[int, int] = {}
-        self.active_by_channel: Dict[int, int] = {}
         self.db: Optional[aiosqlite.Connection] = None
+        self._locks: Dict[int, asyncio.Lock] = {}
+        # Configuration for prize payouts (bank vs cash)
+        self.payout_to_bank = os.getenv("LOTTERY_PAYOUT_TO", "bank").lower() == "bank"
 
-    # ----- DB helpers -----
-    async def _ensure_db(self):
-        if self.db: return
-        self.db = await aiosqlite.connect(DB_PATH)
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS poker_stats (
-                guild_id INTEGER NOT NULL,
-                user_id  INTEGER NOT NULL,
-                hands    INTEGER NOT NULL DEFAULT 0,
-                wins     INTEGER NOT NULL DEFAULT 0,
-                losses   INTEGER NOT NULL DEFAULT 0,
-                pushes   INTEGER NOT NULL DEFAULT 0,
-                wagered  INTEGER NOT NULL DEFAULT 0,
-                net      INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id)
-            )
-        """)
-        await self.db.commit()
+        self.sweeper.start()
+        self.opener.start()
 
-    async def _update_stats(self, guild_id: int, user_id: int, bet: int, outcome: int):
-        """
-        outcome: 1=win, 0=push, -1=loss
-        net change: +bet / 0 / -bet
-        """
-        await self._ensure_db()
-        assert self.db is not None
-        await self.db.execute("""
-            INSERT INTO poker_stats (guild_id, user_id)
-            VALUES (?, ?)
-            ON CONFLICT(guild_id, user_id) DO NOTHING
-        """, (guild_id, user_id))
-        hands = 1
-        wins  = 1 if outcome > 0 else 0
-        losses= 1 if outcome < 0 else 0
-        pushes= 1 if outcome == 0 else 0
-        net   = bet if outcome > 0 else (-bet if outcome < 0 else 0)
-        wager = bet
-        await self.db.execute("""
-            UPDATE poker_stats
-               SET hands = hands + ?,
-                   wins = wins + ?,
-                   losses = losses + ?,
-                   pushes = pushes + ?,
-                   wagered = wagered + ?,
-                   net = net + ?
-             WHERE guild_id = ? AND user_id = ?
-        """, (hands, wins, losses, pushes, wager, net, guild_id, user_id))
-        await self.db.commit()
+    def cog_unload(self):
+        self.sweeper.cancel()
+        self.opener.cancel()
 
-    async def cog_unload(self):
-        if self.db:
-            await self.db.close()
-            self.db = None
+    # ---------- DB ----------
+    async def _get_db(self) -> aiosqlite.Connection:
+        if not self.db:
+            try:
+                os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+            except Exception:
+                pass
+            self.db = await aiosqlite.connect(DB_PATH)
+            self.db.row_factory = aiosqlite.Row
+            await self.db.executescript(SCHEMA)
+            await self.db.commit()
+        return self.db
 
-    # ----- concurrency helpers -----
-    def _locked(self, user_id: int, channel_id: int) -> Optional[str]:
-        if user_id in self.active_by_user: return "You already have a Poker-Lite hand in progress."
-        if channel_id in self.active_by_channel: return "There’s already an active Poker-Lite hand in this channel."
-        return None
-    def _unlock(self, user_id: int, channel_id: int):
-        self.active_by_user.pop(user_id, None)
-        self.active_by_channel.pop(channel_id, None)
+    def _lock(self, guild_id: int) -> asyncio.Lock:
+        L = self._locks.get(guild_id)
+        if not L:
+            L = asyncio.Lock()
+            self._locks[guild_id] = L
+        return L
 
-    # ----- Commands -----
-    @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
-    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
-    async def poker(self, interaction: discord.Interaction, bet: int):
-        """Main game command — bet is required, no max, must be > 0."""
-        if interaction.guild_id is None:
-            return await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+    async def _credit_prize(self, guild_id: int, user_id: int, amount: int, reason: str):
+        """Credit a lottery prize to user's account (bank or cash based on config)."""
+        if self.payout_to_bank:
+            # Use the unbelievaboat_api client directly for bank credits
+            unb_client = get_unb_client()
+            await unb_client.update_user_balance(guild_id, user_id, bank=amount, reason=reason)
+        else:
+            # Use utils for cash credits
+            await credit_user(guild_id, user_id, amount, reason)
 
-        # Ensure currency client exists
+    async def _last_channel_or_none(self, guild_id: int) -> Optional[int]:
+        db = await self._get_db()
+        row = await (await db.execute(
+            "SELECT announce_channel_id FROM lotteries WHERE guild_id=? ORDER BY id DESC LIMIT 1",
+            (guild_id,)
+        )).fetchone()
+        return int(row["announce_channel_id"]) if row else None
+
+    async def _current_open(self, guild_id: int) -> Optional[aiosqlite.Row]:
+        db = await self._get_db()
+        return await (await db.execute(
+            "SELECT * FROM lotteries WHERE guild_id=? AND status='open' ORDER BY id DESC LIMIT 1",
+            (guild_id,)
+        )).fetchone()
+
+    async def _pot_components(self, lottery_id: int) -> Tuple[int, int, int]:
+        """Return (tickets_qty, gross_paid, bonus_added)."""
+        db = await self._get_db()
+        lot = await (await db.execute("SELECT * FROM lotteries WHERE id=?", (lottery_id,))).fetchone()
+        if not lot:
+            return (0, 0, 0)
+        row = await (await db.execute(
+            "SELECT COALESCE(SUM(quantity),0) q, COALESCE(SUM(amount_paid),0) p FROM tickets WHERE lottery_id=?",
+            (lottery_id,)
+        )).fetchone()
+        qty = int(row["q"])
+        paid = int(row["p"])
+        bonus = qty * int(lot["bonus_per_ticket"])
+        return (qty, paid, bonus)
+
+    async def _bank_get(self, guild_id: int) -> int:
+        db = await self._get_db()
+        row = await (await db.execute("SELECT amount FROM rollover_bank WHERE guild_id=?", (guild_id,))).fetchone()
+        return int(row["amount"]) if row else 0
+
+    async def _bank_add(self, guild_id: int, amount: int):
+        db = await self._get_db()
+        await db.execute(
+            "INSERT INTO rollover_bank (guild_id, amount) VALUES (?, ?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET amount = amount + EXCLUDED.amount",
+            (guild_id, int(max(0, amount)))
+        )
+        await db.commit()
+
+    async def _bank_clear(self, guild_id: int) -> int:
+        db = await self._get_db()
+        amt = await self._bank_get(guild_id)
+        await db.execute(
+            "INSERT INTO rollover_bank (guild_id, amount) VALUES (?, 0) "
+            "ON CONFLICT(guild_id) DO UPDATE SET amount=0",
+            (guild_id,)
+        )
+        await db.commit()
+        return amt
+
+    # ---------- Background: close at end of window ----------
+    @tasks.loop(seconds=60)
+    async def sweeper(self):
         try:
-            get_unb_client()
+            db = await self._get_db()
+            now = now_i()
+            async with db.execute(
+                "SELECT id, guild_id, announce_channel_id FROM lotteries WHERE status='open' AND close_ts <= ?",
+                (now,)
+            ) as cur:
+                rows = await cur.fetchall()
+            
+            if rows:
+                print(f"lottery sweeper: processing {len(rows)} lotteries that need to close")
+                for r in rows:
+                    gid = int(r["guild_id"])
+                    lottery_id = int(r["id"])
+                    channel_id = int(r["announce_channel_id"])
+                    ch = self.bot.get_channel(channel_id)
+                    channel_name = ch.name if ch else f"<#{channel_id}>"
+                    print(f"lottery sweeper: processing lottery {lottery_id} in guild {gid}, channel {channel_name}")
+                    
+                    async with self._lock(gid):
+                        await self._close_and_settle_or_rollover_locked(gid, lottery_id, force_rollover=False)
         except Exception as e:
-            return await interaction.response.send_message(
-                f"⚠️ Currency service not ready: {e}", ephemeral=True
+            print("lottery sweeper error:", e)
+
+    @sweeper.before_loop
+    async def before_sweeper(self):
+        await self.bot.wait_until_ready()
+
+    # ---------- Background: open at 11:00 ET ----------
+    @tasks.loop(seconds=60)
+    async def opener(self):
+        try:
+            await self._get_db()
+            for g in list(self.bot.guilds):
+                gid = g.id
+                async with self._lock(gid):
+                    row = await self._current_open(gid)
+                    now = now_i()
+                    if row and now < int(row["close_ts"]):
+                        continue
+                    open_ts = next_11am_et(now - 3600)
+                    if now < open_ts:
+                        continue
+                    close_ts = open_ts + 24 * 3600
+                    # close_ts = open_ts + 2 * 60
+                    ch_id = await self._last_channel_or_none(gid)
+                    if ch_id is None:
+                        continue
+                    await self._open_new_round(gid, ch_id, open_ts, close_ts, auto=True)
+        except Exception as e:
+            print("lottery opener error:", e)
+
+    @opener.before_loop
+    async def before_opener(self):
+        await self.bot.wait_until_ready()
+
+    # ---------- Round ops ----------
+    async def _open_new_round(self, guild_id: int, channel_id: int, open_ts: int, close_ts: int, auto: bool):
+        db = await self._get_db()
+        seed = await self._bank_clear(guild_id)
+
+        await db.execute(
+            "INSERT INTO lotteries (guild_id, status, ticket_price, bonus_per_ticket, min_participants, split_first_bps, seed_amount, open_ts, close_ts, announce_channel_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                guild_id, "open",
+                DEFAULT_TICKET_PRICE, DEFAULT_BONUS_PER_TICKET, DEFAULT_MIN_PARTICIPANTS,
+                DEFAULT_SPLIT_FIRST_BPS, seed, open_ts, close_ts, channel_id
+            )
+        )
+        await db.commit()
+
+        ch = self.bot.get_channel(channel_id)
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(
+                f"🎟️ **Daily Lottery is OPEN!** {'(auto)' if auto else ''}\n"
+                f"• Ticket: {UNB_ICON} **{DEFAULT_TICKET_PRICE:,}**  • Bonus: +{UNB_ICON} **{DEFAULT_BONUS_PER_TICKET:,}** / ticket\n"
+                f"• Seed (rollover): {UNB_ICON} **{seed:,}**\n"
+                f"• Payouts on player day: 🥇 {DEFAULT_SPLIT_FIRST_BPS/100:.2f}% / 🥈 {100 - DEFAULT_SPLIT_FIRST_BPS/100:.2f}%\n"
+                f"• Closes: <t:{close_ts}:R>  (resets daily at **11:00 AM ET**)\n\n"
+                f"Buy with `/lottery buy quantity:<n>` • Check `/lottery status`"
             )
 
-        user = interaction.user
-        channel = interaction.channel
-        if channel is None:
-            return await interaction.response.send_message("Channel not found.", ephemeral=True)
+    async def _close_and_settle_or_rollover_locked(self, guild_id: int, lottery_id: int, force_rollover: bool):
+        db = await self._get_db()
+        lot = await (await db.execute("SELECT * FROM lotteries WHERE id=?", (lottery_id,))).fetchone()
+        if not lot or lot["status"] != "open":
+            print(f"lottery {lottery_id}: not found or not open (status: {lot['status'] if lot else 'not found'})")
+            return
 
-        msg = self._locked(user.id, channel.id)
-        if msg: return await interaction.response.send_message(msg, ephemeral=True)
+        print(f"lottery {lottery_id}: closing lottery in channel {lot['announce_channel_id']}")
+        await db.execute("UPDATE lotteries SET status='drawing' WHERE id=?", (lottery_id,))
+        await db.commit()
 
-        if bet <= 0:
-            return await interaction.response.send_message(
-                f"❌ Invalid bet. You must bet at least {fmt_tc(1)}.",
-                ephemeral=True
+        ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+        if not ch:
+            print(f"lottery {lottery_id}: channel {lot['announce_channel_id']} not found!")
+            return
+
+        qty, gross_paid, bonus = await self._pot_components(lottery_id)
+        seed = int(lot["seed_amount"])
+        total_pot = seed + gross_paid + bonus
+
+        # Unique participants check
+        row = await (await db.execute(
+            "SELECT COUNT(*) AS u FROM tickets WHERE lottery_id=? AND quantity>0",
+            (lottery_id,)
+        )).fetchone()
+        unique_participants = int(row["u"])
+        min_p = int(lot["min_participants"])
+
+        do_rollover = force_rollover or (unique_participants < min_p)
+
+        # House check (hidden from users)
+        if not do_rollover and qty > 0:
+            house_tickets = _house_tickets_for(qty)
+            total_for_house_draw = qty + house_tickets
+            if house_tickets > 0 and total_for_house_draw > 0:
+                r = random.SystemRandom().randrange(1, total_for_house_draw + 1)
+                if r <= house_tickets:
+                    do_rollover = True  # House wins
+
+        if do_rollover:
+            await self._bank_add(guild_id, total_pot)
+            await db.execute("UPDATE lotteries SET status='rolled' WHERE id=?", (lottery_id,))
+            await db.commit()
+
+            if isinstance(ch, discord.TextChannel):
+                if force_rollover:
+                    reason_txt = "forced no-winner"
+                elif unique_participants < min_p:
+                    reason_txt = f"need ≥ {min_p} participants"
+                else:
+                    reason_txt = "💀 The House devoured the pot!"
+                await ch.send(
+                    f"🔁 **Daily Lottery rolled over** — {reason_txt}.\n"
+                    f"→ {UNB_ICON} **{total_pot:,}** carried to tomorrow’s 11:00 AM ET round."
+                )
+            return
+
+        # Player day — draw winners & pay out
+        entries = [(int(r["user_id"]), int(r["quantity"])) for r in await (await db.execute(
+            "SELECT user_id, quantity FROM tickets WHERE lottery_id=? AND quantity>0",
+            (lottery_id,)
+        )).fetchall()]
+
+        w1, w2 = weighted_draw_two(entries)
+        split_first = int(lot["split_first_bps"]) / 10000.0
+        first_amt = int(math.floor(total_pot * split_first))
+        second_amt = total_pot - first_amt
+        draw_ts = now_i()
+
+        try:
+            await self._credit_prize(guild_id, w1, first_amt, "Daily Lottery prize (1st)")
+            await db.execute(
+                "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
+                (lottery_id, 1, w1, first_amt, draw_ts)
+            )
+            if w2 is not None:
+                await self._credit_prize(guild_id, w2, second_amt, "Daily Lottery prize (2nd)")
+                await db.execute(
+                    "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
+                    (lottery_id, 2, w2, second_amt, draw_ts)
+                )
+            else:
+                # Only one unique entrant—give them second share too
+                await self._credit_prize(guild_id, w1, second_amt, "Daily Lottery prize (only participant bonus)")
+                await db.execute(
+                    "INSERT INTO winners (lottery_id, place, user_id, prize_amount, draw_ts) VALUES (?,?,?,?,?)",
+                    (lottery_id, 2, w1, second_amt, draw_ts)
+                )
+        except Exception as e:
+            print("payout error:", e)
+
+        await db.execute("UPDATE lotteries SET status='settled' WHERE id=?", (lottery_id,))
+        await db.commit()
+
+        if isinstance(ch, discord.TextChannel):
+            await ch.send(
+                f"🏁 **Daily Lottery finished!**\n"
+                f"• Tickets: **{qty:,}** • Seed: {UNB_ICON} **{seed:,}**\n"
+                f"• Gross (tickets): {UNB_ICON} **{gross_paid:,}** • Bonus: {UNB_ICON} **{bonus:,}**\n"
+                f"• **Total pot:** {UNB_ICON} **{total_pot:,}**\n"
+                f"🥇 1st: <@{w1}> — {UNB_ICON} **{first_amt:,}**\n"
+                f"🥈 2nd: <@{w2 if w2 is not None else w1}> — {UNB_ICON} **{second_amt:,}**"
             )
 
-        # Balance check
-        try:
-            balance = await get_user_balance(interaction.guild_id, user.id)
-            if balance < bet:
-                raise InsufficientFunds(f"Need {bet}, have {balance}")
-        except UnbelievaBoatError as e:
-            return await interaction.response.send_message(f"Balance check failed: {e}", ephemeral=True)
+    # =================== Slash Commands ===================
 
-        # Escrow — debit bet
-        try:
-            await debit_user(interaction.guild_id, user.id, bet, reason="Poker-Lite bet escrow")
-        except UnbelievaBoatError as e:
-            return await interaction.response.send_message(f"Couldn’t place bet: {e}", ephemeral=True)
+    @group.command(name="open", description="(Admin) Set the daily channel and open the current 24h round.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(announce_channel="Channel to announce & run daily rounds")
+    async def open_cmd(self, inter: discord.Interaction, announce_channel: Optional[discord.TextChannel] = None):
+        await inter.response.defer(ephemeral=True)
+        ch = announce_channel or inter.channel
 
-        # Start game
-        deck = new_deck(); random.shuffle(deck)
-        state = PokerState(user.id, bet, deck)
+        now = datetime.now(DAILY_TZ)
+        today_open = now.replace(hour=DAILY_HOUR, minute=DAILY_MINUTE, second=0, microsecond=0)
+        open_ts = int(today_open.timestamp())
+        close_ts = int((today_open + timedelta(days=1)).timestamp())  # TODO: revert this for production
+        # close_ts = open_ts + 2 * 60  # 2 minutes for testing
 
-        # Beginner tips
-        label = hand_label(state.player)
-        sugg = suggested_discards_for_player(state.player)  # 1-based indices
-        tips = (
-            f"**Hand strength:** {label}\n"
-            f"**Suggested discards:** {fmt_indices(sugg)} (optional)\n"
-            f"Use the dropdown to select up to 3 cards by face, then press **Draw & Showdown**."
+        async with self._lock(inter.guild_id):
+            # Check if there's already an open lottery in this channel
+            db = await self._get_db()
+            existing = await (await db.execute(
+                "SELECT id FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=?",
+                (inter.guild_id, ch.id)
+            )).fetchone()
+            
+            if existing:
+                return await inter.followup.send(
+                    f"❌ There's already an open lottery in {ch.mention}. Use `/lottery status` to check current lotteries.",
+                    ephemeral=True
+                )
+            
+            await self._open_new_round(inter.guild_id, ch.id, open_ts, close_ts, auto=False)
+
+        await inter.followup.send(f"✅ Daily lottery channel set to {ch.mention}. Round opened.", ephemeral=True)
+
+    @group.command(name="buy", description="Buy N tickets for the current (daily) lottery.")
+    @app_commands.describe(quantity="How many tickets to buy")
+    @app_commands.describe(lottery_id="Specific lottery ID to buy into (optional)")
+    async def buy_cmd(self, inter: discord.Interaction, quantity: app_commands.Range[int, 1, 1000], lottery_id: Optional[int] = None):
+        await inter.response.defer(ephemeral=True)
+        L = self._lock(inter.guild_id)
+        async with L:
+            db = await self._get_db()
+            
+            # If specific lottery ID provided, use that
+            if lottery_id:
+                lot = await (await db.execute(
+                    "SELECT * FROM lotteries WHERE id=? AND guild_id=? AND status='open'",
+                    (lottery_id, inter.guild_id)
+                )).fetchone()
+                if not lot:
+                    return await inter.followup.send(f"❌ Lottery #{lottery_id} not found or not open.", ephemeral=True)
+            else:
+                # First, try to find a lottery in the current channel
+                lot = await (await db.execute(
+                    "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                    (inter.guild_id, inter.channel.id)
+                )).fetchone()
+                
+                # If no lottery in current channel, fall back to any open lottery
+                if not lot:
+                    lot = await self._current_open(inter.guild_id)
+                    if lot:
+                        ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                        channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                        return await inter.followup.send(
+                            f"❌ No lottery open in this channel.",
+                            ephemeral=True
+                        )
+            
+            if not lot or now_i() >= int(lot["close_ts"]):
+                return await inter.followup.send("No open daily lottery to buy into.", ephemeral=True)
+
+            q = int(quantity)
+            price = int(lot["ticket_price"])
+            cost = q * price
+
+            try:
+                await debit_user(inter.guild_id, inter.user.id, cost, reason=f"Daily Lottery tickets x{q}")
+            except (InsufficientFunds, UnbelievaBoatError) as e:
+                if "insufficient" in str(e).lower():
+                    bal = await get_user_balance(inter.guild_id, inter.user.id)
+                    return await inter.followup.send(
+                        f"❌ Not enough {UNB_ICON}. You have **{bal:,}**, need **{cost:,}** "
+                        f"for **{q}** ticket(s) (price **{price:,}** each).",
+                        ephemeral=True
+                    )
+                else:
+                    raise
+            except Exception as e:
+                return await inter.followup.send(f"Payment error: {e}", ephemeral=True)
+
+            await db.execute(
+                "INSERT INTO tickets (lottery_id, user_id, quantity, amount_paid) VALUES (?,?,?,?) "
+                "ON CONFLICT(lottery_id, user_id) DO UPDATE SET "
+                "quantity = quantity + EXCLUDED.quantity, "
+                "amount_paid = amount_paid + EXCLUDED.amount_paid",
+                (int(lot["id"]), inter.user.id, q, cost)
+            )
+            await db.commit()
+
+            bonus_per_ticket = int(lot["bonus_per_ticket"])
+            pot_delta = q * (price + bonus_per_ticket)
+
+            row = await (await db.execute(
+                "SELECT quantity FROM tickets WHERE lottery_id=? AND user_id=?",
+                (int(lot["id"]), inter.user.id)
+            )).fetchone()
+            user_qty = int(row["quantity"]) if row else q
+
+        ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+        channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+        
+        await inter.followup.send(
+            f"✅ Bought **{q}** ticket(s) for Lottery #{lot['id']} in #{channel_name}.\n"
+            f"Your total: **{user_qty:,}** tickets.\n"
+            f"Pot increased by {UNB_ICON} **{pot_delta:,}** "
+            f"(includes +{UNB_ICON} {bonus_per_ticket:,} / ticket).",
+            ephemeral=True
         )
 
-        e = discord.Embed(title="Poker-Lite — Draw Phase", color=0x3498DB)
-        e.add_field(name="Your Hand", value=render_hand_inline(state.player), inline=False)
-        e.add_field(name="Dealer Hand", value="🂠 🂠 🂠 🂠 🂠", inline=False)
-        e.add_field(name="Bet", value=fmt_tc(bet))
-        e.add_field(name="Tips", value=tips, inline=False)
-        e.set_footer(text="You have 60s to act.")
+    @group.command(name="status", description="Show current daily lottery status.")
+    async def status_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        
+        # First, try to find a lottery in the current channel
+        lot = await (await db.execute(
+            "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+            (inter.guild_id, inter.channel.id)
+        )).fetchone()
+        
+        # If no lottery in current channel, show any open lottery
+        if not lot:
+            lot = await self._current_open(inter.guild_id)
+            if not lot:
+                bank = await self._bank_get(inter.guild_id)
+                return await inter.followup.send(
+                    f"🎟️ Daily Lottery is **idle**. Next round auto-opens at **11:00 AM ET**.\n"
+                    f"Rollover bank: {UNB_ICON} **{bank:,}**",
+                    ephemeral=True
+                )
+            else:
+                # Show lottery from different channel
+                ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                return await inter.followup.send(
+                    f"🎟️ **No lottery in this channel.**\n"
+                    f"There's a lottery open in #{channel_name}.",
+                    ephemeral=True
+                )
 
-        view = PokerView(state, self, timeout=60)
-        await interaction.response.send_message(embed=e, view=view)
-        sent = await interaction.original_response()
-        self.active_by_user[user.id] = sent.id
-        self.active_by_channel[channel.id] = sent.id
-        view.message = sent  # set for later edits
+        qty, gross_paid, bonus = await self._pot_components(int(lot["id"]))
+        seed = int(lot["seed_amount"])
+        total_pot = seed + gross_paid + bonus
 
-        try:
-            await view.wait()
-        finally:
-            self._unlock(user.id, channel.id)
+        row = await (await db.execute(
+            "SELECT COUNT(*) u FROM tickets WHERE lottery_id=? AND quantity>0",
+            (int(lot["id"]),)
+        )).fetchone()
+        participants = int(row["u"])
 
-    @app_commands.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
-    @app_commands.describe(user="User to inspect (defaults to you)")
-    async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
-        if interaction.guild_id is None:
-            return await interaction.response.send_message("Server-only command.", ephemeral=True)
-        await self._ensure_db()
-        uid = (user or interaction.user).id
-        row = None
-        assert self.db is not None
-        async with self.db.execute("""
-            SELECT hands, wins, losses, pushes, wagered, net
-              FROM poker_stats
-             WHERE guild_id = ? AND user_id = ?
-        """, (interaction.guild_id, uid)) as cur:
-            row = await cur.fetchone()
-        if not row:
-            return await interaction.response.send_message(
-                f"📝 No Poker-Lite history for {(user or interaction.user).mention} yet.",
+        await inter.followup.send(
+            f"🎟️ **Daily Lottery OPEN**\n"
+            f"• Ticket: {UNB_ICON} **{int(lot['ticket_price']):,}**  • Bonus: {UNB_ICON} **{int(lot['bonus_per_ticket']):,}** / ticket\n"
+            f"• Seed: {UNB_ICON} **{seed:,}**  • Participants: **{participants}**  • Tickets: **{qty:,}**\n"
+            f"• Gross: {UNB_ICON} **{gross_paid:,}**  • Bonus: {UNB_ICON} **{bonus:,}**\n"
+            f"• **Total pot:** {UNB_ICON} **{total_pot:,}**\n"
+            f"• Closes: <t:{int(lot['close_ts'])}:R> (<t:{int(lot['close_ts'])}:f>)",
+            ephemeral=True
+        )
+
+    @group.command(name="list", description="List all currently open lotteries.")
+    @is_admin_or_manager()
+    async def list_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        
+        # Get all open lotteries for this guild
+        lots = await (await db.execute(
+            "SELECT id, announce_channel_id, open_ts, close_ts FROM lotteries WHERE guild_id=? AND status='open' ORDER BY id ASC",
+            (inter.guild_id,)
+        )).fetchall()
+        
+        if not lots:
+            bank = await self._bank_get(inter.guild_id)
+            return await inter.followup.send(
+                f"🎟️ **No open lotteries** in this server.\n"
+                f"Rollover bank: {UNB_ICON} **{bank:,}**",
                 ephemeral=True
             )
-        hands, wins, losses, pushes, wagered, net = row
-        winrate = (wins / hands * 100) if hands else 0.0
-        avg_bet = (wagered / hands) if hands else 0
-        emb = discord.Embed(
-            title=f"Poker-Lite Stats — {(user or interaction.user).display_name}",
-            color=discord.Color.blurple()
+        
+        lines = []
+        for lot in lots:
+            ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+            channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+            
+            qty, gross_paid, bonus = await self._pot_components(int(lot["id"]))
+            seed = await self._bank_get(inter.guild_id) if int(lot["id"]) == lots[0]["id"] else 0  # Only show seed for first lottery
+            total_pot = seed + gross_paid + bonus
+            
+            row = await (await db.execute(
+                "SELECT COUNT(*) u FROM tickets WHERE lottery_id=? AND quantity>0",
+                (int(lot["id"]),)
+            )).fetchone()
+            participants = int(row["u"])
+            
+            lines.append(
+                f"**Lottery #{lot['id']}** in #{channel_name}\n"
+                f"• Participants: **{participants}** • Tickets: **{qty:,}**\n"
+                f"• Pot: {UNB_ICON} **{total_pot:,}** • Closes: <t:{int(lot['close_ts'])}:R>"
+            )
+        
+        await inter.followup.send(
+            f"🎟️ **Open Lotteries ({len(lots)}):**\n\n" + "\n\n".join(lines),
+            ephemeral=True
         )
-        emb.add_field(name="Hands", value=f"{hands}", inline=True)
-        emb.add_field(name="Wins / Losses / Pushes", value=f"{wins} / {losses} / {pushes}", inline=True)
-        emb.add_field(name="Win Rate", value=f"{winrate:.1f}%", inline=True)
-        emb.add_field(name="Total Wagered", value=fmt_tc(wagered), inline=True)
-        emb.add_field(name="Net", value=("+" if net>=0 else "") + fmt_tc(net), inline=True)
-        emb.add_field(name="Avg Bet", value=fmt_tc(int(avg_bet)), inline=True)
-        await interaction.response.send_message(embed=emb, ephemeral=False)
 
-    @app_commands.command(name="poker_leaderboard", description="Show the Poker-Lite leaderboard for this server.")
-    @app_commands.describe(
-        metric="Rank by 'net' (profit) or 'wins' (default: net)",
-        limit="Number of players to show (1–25, default 10)"
-    )
-    @app_commands.choices(metric=[
-        app_commands.Choice(name="net", value="net"),
-        app_commands.Choice(name="wins", value="wins")
-    ])
-    async def poker_leaderboard(
-        self,
-        interaction: discord.Interaction,
-        metric: Optional[app_commands.Choice[str]] = None,
-        limit: Optional[int] = 10
-    ):
-        if interaction.guild_id is None:
-            return await interaction.response.send_message("Server-only command.", ephemeral=True)
-        await self._ensure_db()
-        limit = max(1, min(int(limit or 10), 25))
-        order_col = "net" if (not metric or metric.value == "net") else "wins"
-        assert self.db is not None
-        rows = []
-        async with self.db.execute(f"""
-            SELECT user_id, hands, wins, losses, pushes, wagered, net
-              FROM poker_stats
-             WHERE guild_id = ?
-             ORDER BY {order_col} DESC, wins DESC, hands DESC
-             LIMIT ?
-        """, (interaction.guild_id, limit)) as cur:
-            rows = await cur.fetchall()
-        if not rows:
-            return await interaction.response.send_message("No Poker-Lite games have been recorded here yet.", ephemeral=True)
+    @group.command(name="draw", description="(Admin) Force close now.")
+    @app_commands.default_permissions(administrator=True)
+    async def draw_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        async with self._lock(inter.guild_id):
+            db = await self._get_db()
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
+            if not lot:
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to draw.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
+            
+            await self._close_and_settle_or_rollover_locked(inter.guild_id, int(lot["id"]), force_rollover=False)
+        await inter.followup.send("Processing end of round…", ephemeral=True)
+
+    @group.command(name="cancel", description="(Admin) Cancel and REFUND everyone (no rollover).")
+    @app_commands.default_permissions(administrator=True)
+    async def cancel_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        async with self._lock(inter.guild_id):
+            db = await self._get_db()
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
+            if not lot:
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to cancel.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
+
+            await db.execute("UPDATE lotteries SET status='drawing' WHERE id=?", (int(lot["id"]),))
+            await db.commit()
+
+            # Refund all
+            async with db.execute("SELECT user_id, amount_paid FROM tickets WHERE lottery_id=?", (int(lot["id"]),)) as cur:
+                for r in await cur.fetchall():
+                    uid = int(r["user_id"])
+                    amt = int(r["amount_paid"])
+                    if amt > 0:
+                        try:
+                            # Refunds go to cash (where tickets were purchased from)
+                            await credit_user(inter.guild_id, uid, amt, reason="Daily Lottery cancelled (admin)")
+                        except Exception as e:
+                            print(f"refund error uid={uid}: {e}")
+
+            await db.execute("UPDATE lotteries SET status='cancelled' WHERE id=?", (int(lot["id"]),))
+            await db.commit()
+
+        await inter.followup.send("✅ Cancelled and refunded.", ephemeral=True)
+
+    @group.command(name="rollover_nowinner", description="(Admin) Force no-winner and roll the pot to tomorrow.")
+    @app_commands.default_permissions(administrator=True)
+    async def rollover_nowinner_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        async with self._lock(inter.guild_id):
+            db = await self._get_db()
+            
+            # First, try to find a lottery in the current channel
+            lot = await (await db.execute(
+                "SELECT * FROM lotteries WHERE guild_id=? AND status='open' AND announce_channel_id=? ORDER BY id DESC LIMIT 1",
+                (inter.guild_id, inter.channel.id)
+            )).fetchone()
+            
+            # If no lottery in current channel, fall back to any open lottery
+            if not lot:
+                lot = await self._current_open(inter.guild_id)
+                if not lot:
+                    return await inter.followup.send("No open daily lottery to rollover.", ephemeral=True)
+                else:
+                    ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+                    channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+                    return await inter.followup.send(
+                        f"❌ No lottery open in this channel.",
+                        ephemeral=True
+                    )
+            
+            await self._close_and_settle_or_rollover_locked(inter.guild_id, int(lot["id"]), force_rollover=True)
+        await inter.followup.send("✅ Rolled over. Pot carried to tomorrow's 11:00 AM ET round.", ephemeral=True)
+
+    @group.command(name="history", description="Show recent daily results.")
+    async def history_cmd(self, inter: discord.Interaction, limit: app_commands.Range[int, 1, 10] = 5):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        lots = await (await db.execute(
+            "SELECT id, status, seed_amount, open_ts, close_ts "
+            "FROM lotteries WHERE guild_id=? AND status IN ('settled','rolled','cancelled') "
+            "ORDER BY id DESC LIMIT ?",
+            (inter.guild_id, int(limit))
+        )).fetchall()
+
+        if not lots:
+            return await inter.followup.send("No past daily rounds yet.", ephemeral=True)
 
         lines = []
-        for idx, (uid, hands, wins, losses, pushes, wagered, net) in enumerate(rows, start=1):
-            mention = f"<@{uid}>"
-            if order_col == "net":
-                lines.append(f"**{idx}.** {mention} — Net {('+' if net>=0 else '')}{fmt_tc(net)} • Hands {hands}, Wins {wins}")
-            else:
-                lines.append(f"**{idx}.** {mention} — Wins {wins} • Net {('+' if net>=0 else '')}{fmt_tc(net)} • Hands {hands}")
-        title = f"Poker-Lite Leaderboard — {interaction.guild.name} (by {order_col})"
-        emb = discord.Embed(title=title, description="\n".join(lines), color=discord.Color.gold())
-        await interaction.response.send_message(embed=emb, ephemeral=False)
+        for lot in lots:
+            lot_id = int(lot["id"])
+            qty, gross_paid, bonus = await self._pot_components(lot_id)
+            total_pot = int(lot["seed_amount"]) + gross_paid + bonus
 
+            winners = await (await db.execute(
+                "SELECT place, user_id, prize_amount FROM winners WHERE lottery_id=? ORDER BY place ASC",
+                (lot_id,)
+            )).fetchall()
+
+            if winners and lot["status"] == "settled":
+                wt = " • ".join(
+                    f"#{int(w['place'])}: <@{int(w['user_id'])}> ({UNB_ICON} {int(w['prize_amount']):,})"
+                    for w in winners
+                )
+            else:
+                wt = "No winner (rolled or cancelled)"
+
+            lines.append(
+                f"**#{lot_id}** [{lot['status']}]: Pot {UNB_ICON} **{total_pot:,}** • Tickets **{qty:,}**\n"
+                f"Open <t:{int(lot['open_ts'])}:f> → Close <t:{int(lot['close_ts'])}:f>\n→ {wt}"
+            )
+
+        await inter.followup.send("\n\n".join(lines)[:1995], ephemeral=True)
+
+    @group.command(name="storage", description="(Admin) Show DB path & size")
+    @is_admin_or_manager()
+    async def storage_cmd(self, inter: discord.Interaction):
+        import os
+        db_path = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
+        exists = os.path.exists(db_path)
+        size = os.path.getsize(db_path) if exists else 0
+        await inter.response.send_message(
+            f"DB: {db_path}\nExists: **{exists}**\nSize: **{size:,} bytes**",
+            ephemeral=True
+        )
+        
+        db = await self._get_db()
+        # List all tables
+        tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+        tables_cursor = await db.execute(tables_query)
+        tables = await tables_cursor.fetchall()
+        
+        await inter.followup.send(
+            f"📊 **Database Tables Found:** {len(tables)}",
+            ephemeral=True
+        )
+        
+        for table in tables:
+            table_name = table['name']
+            await inter.followup.send(
+                f"📋 **Table:** `{table_name}`",
+                ephemeral=True
+            )
+            
+            # Get row count for each table
+            count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+            count_cursor = await db.execute(count_query)
+            count_result = await count_cursor.fetchone()
+            row_count = count_result['count']
+            
+            await inter.followup.send(
+                f"   📈 **Rows:** {row_count}",
+                ephemeral=True
+            )
+            
+            # Show schema for each table
+            schema_query = "SELECT sql FROM sqlite_master WHERE type='table' AND name=?"
+            schema_cursor = await db.execute(schema_query, (table_name,))
+            schema_result = await schema_cursor.fetchone()
+            if schema_result and schema_result['sql']:
+                schema_text = schema_result['sql'][:200] + "..." if len(schema_result['sql']) > 200 else schema_result['sql']
+                await inter.followup.send(
+                    f"   🏗️ **Schema:** `{schema_text}`",
+                    ephemeral=True
+                )
+            
+            # Show sample data (first 3 rows)
+            if row_count > 0:
+                sample_query = f"SELECT * FROM {table_name} LIMIT 3"
+                sample_cursor = await db.execute(sample_query)
+                sample_rows = await sample_cursor.fetchall()
+                
+                for i, row in enumerate(sample_rows, 1):
+                    row_dict = dict(row)
+                    await inter.followup.send(
+                        f"   📄 **Sample Row {i}:** `{row_dict}`",
+                        ephemeral=True
+                    )
+
+    @group.command(name="tables", description="List all tables in the lottery database")
+    @is_admin_or_manager()
+    async def list_tables(self, inter: discord.Interaction):
+        """Simple command to just list table names and row counts"""
+        await inter.response.defer(ephemeral=True)
+        
+        try:
+            db = await self._get_db()
+            tables_query = "SELECT name FROM sqlite_master WHERE type='table'"
+            tables_cursor = await db.execute(tables_query)
+            tables = await tables_cursor.fetchall()
+            
+            if not tables:
+                return await inter.followup.send("No tables found in database.", ephemeral=True)
+            
+            table_info = []
+            for table in tables:
+                table_name = table['name']
+                count_query = f"SELECT COUNT(*) as count FROM {table_name}"
+                count_cursor = await db.execute(count_query)
+                count_result = await count_cursor.fetchone()
+                row_count = count_result['count']
+                table_info.append(f"• **{table_name}**: {row_count} rows")
+            
+            await inter.followup.send(
+                f"📊 **Database Tables ({len(tables)}):**\n" + "\n".join(table_info),
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await inter.followup.send(f"❌ Error accessing database: {e}", ephemeral=True)
+
+    @group.command(name="debug", description="(Admin) Debug lottery state for troubleshooting")
+    @app_commands.default_permissions(administrator=True)
+    async def debug_cmd(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+        db = await self._get_db()
+        
+        # Get all lotteries for this guild
+        all_lots = await (await db.execute(
+            "SELECT id, status, announce_channel_id, open_ts, close_ts FROM lotteries WHERE guild_id=? ORDER BY id DESC LIMIT 10",
+            (inter.guild_id,)
+        )).fetchall()
+        
+        if not all_lots:
+            return await inter.followup.send("No lotteries found for this guild.", ephemeral=True)
+        
+        lines = []
+        for lot in all_lots:
+            ch = self.bot.get_channel(int(lot["announce_channel_id"]))
+            channel_name = ch.name if ch else f"<#{lot['announce_channel_id']}>"
+            
+            now = now_i()
+            time_status = "CLOSED" if now >= int(lot["close_ts"]) else "OPEN"
+            
+            lines.append(
+                f"**#{lot['id']}** [{lot['status']}] in #{channel_name}\n"
+                f"• Time: {time_status} • Opens: <t:{int(lot['open_ts'])}:f> • Closes: <t:{int(lot['close_ts'])}:f>"
+            )
+        
+        await inter.followup.send(
+            f"🔍 **Debug Info - Recent Lotteries:**\n\n" + "\n\n".join(lines),
+            ephemeral=True
+        )
 async def setup(bot: commands.Bot):
-    await bot.add_cog(PokerLite(bot))
+    await bot.add_cog(LotteryDaily(bot))
