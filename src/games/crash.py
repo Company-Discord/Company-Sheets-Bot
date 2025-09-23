@@ -13,13 +13,13 @@ from discord import app_commands
 from discord.app_commands import CheckFailure
 
 # Import permissions and business utilities from utils.py
-from utils import (
+from src.utils.utils import (
     check_user_balances, is_admin_or_manager, MANAGER_ROLE_NAME,
     credit_user, debit_user, get_user_balance, initialize_unb_client, close_unb_client
 )
 
 # Import UnbelievaBoat API for exceptions
-from unbelievaboat_api import UnbelievaBoatError, APIError, AuthenticationError, NotFoundError, RateLimitError
+from src.api.unbelievaboat_api import UnbelievaBoatError, APIError, AuthenticationError, NotFoundError, RateLimitError
 
 # ============================ Config ============================
 

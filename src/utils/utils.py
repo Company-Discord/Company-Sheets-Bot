@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 import os
-from unbelievaboat_api import Client
+from src.api.unbelievaboat_api import Client
 from dotenv import load_dotenv
 
 load_dotenv()

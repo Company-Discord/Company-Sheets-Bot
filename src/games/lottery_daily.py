@@ -18,7 +18,7 @@ from discord import app_commands
 
 UNB_ICON = os.getenv("CURRENCY_EMOTE", "💵")
 
-DB_PATH = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
+DB_PATH = os.getenv("LOTTERY_DB_PATH", "data/databases/lottery.db")
 
 DEFAULT_TICKET_PRICE = int(os.getenv("LOTTERY_TICKET_PRICE", "100000"))          # 100k
 DEFAULT_BONUS_PER_TICKET = int(os.getenv("LOTTERY_BONUS_PER_TICKET", "50000"))   # +50k per ticket (to pot only)
@@ -37,10 +37,10 @@ DAILY_MINUTE = 0
 # =================== Import External APIs ===================
 
 # Import UnbelievaBoat utilities
-from utils import (
+from src.utils.utils import (
     get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
 )
-from unbelievaboat_api import UnbelievaBoatError
+from src.api.unbelievaboat_api import UnbelievaBoatError
 
 # Custom lottery exceptions
 class InsufficientFunds(UnbelievaBoatError):
@@ -824,7 +824,7 @@ class LotteryDaily(commands.Cog):
     @is_admin_or_manager()
     async def storage_cmd(self, inter: discord.Interaction):
         import os
-        db_path = os.getenv("LOTTERY_DB_PATH", "/data/lottery.db")
+        db_path = os.getenv("LOTTERY_DB_PATH", "data/databases/lottery.db")
         exists = os.path.exists(db_path)
         size = os.path.getsize(db_path) if exists else 0
         await inter.response.send_message(

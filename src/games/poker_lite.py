@@ -10,17 +10,17 @@ from discord.ext import commands
 import aiosqlite
 
 # =================== Import External APIs ===================
-from utils import (
+from src.utils.utils import (
     get_unb_client, credit_user, debit_user, get_user_balance
 )
-from unbelievaboat_api import UnbelievaBoatError  
+from src.api.unbelievaboat_api import UnbelievaBoatError  
 
 class InsufficientFunds(UnbelievaBoatError):
     pass
 
 # =================== Config ===================
 CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
-DB_PATH = os.getenv("POKER_DB_PATH", "/data/poker_stats.sqlite3")  # Railway volume
+DB_PATH = os.getenv("POKER_DB_PATH", "data/databases/poker_stats.sqlite3")
 
 def fmt_tc(n: int) -> str:
     return f"{CURRENCY_EMOTE} {n:,}"

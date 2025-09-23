@@ -7,11 +7,11 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime
 
-from utils import is_admin_or_manager
-from engauge_adapter import EngaugeAdapter, InsufficientFunds
+from src.utils.utils import is_admin_or_manager
+from src.api.engauge_adapter import EngaugeAdapter, InsufficientFunds
 
 # ================== Config ===================
-DB_PATH = "predictions.db"
+DB_PATH = "data/databases/predictions.db"
 MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
 CURRENCY_ICON = os.getenv("CURRENCY_EMOJI")
 if not CURRENCY_ICON:

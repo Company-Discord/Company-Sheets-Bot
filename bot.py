@@ -29,51 +29,58 @@ write_lock = asyncio.Lock()
 async def setup_hook():
     # --- Load cogs ---
     try:
-        await bot.load_extension("duel_royale")            # or: "cogs.duel_royale"
+        await bot.load_extension("src.games.duel_royale")
         print("Loaded duel_royale cog ✅")
     except Exception as e:
         print(f"Failed loading duel_royale: {e}")
 
     try:
-        await bot.load_extension("fun")                    # or: "cogs.fun"
+        await bot.load_extension("src.bot.extensions.fun")
         print("Loaded fun cog ✅")
     except Exception as e:
         print(f"Failed loading fun: {e}")
 
     try:
         if os.getenv("IS_DEV") != "True":
-            await bot.load_extension("horse_race_engauge")     # or: "cogs.horse_race_engauge"
+            await bot.load_extension("src.games.horse_race_engauge")
             print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
 
     # ---- Load the Twitch-style Engauge predictions extension ----
     try:
-        await bot.load_extension("predictions")            # file: predictions.py
+        await bot.load_extension("src.bot.extensions.predictions")
         print("Loaded predictions cog ✅")
     except Exception as e:
         print(f"Failed loading predictions: {e}")
 
     # ---- Load the Crash game extension ----
     try:
-        await bot.load_extension("crash")                  # file: crash.py
+        await bot.load_extension("src.games.crash")
         print("Loaded crash cog ✅")
     except Exception as e:
         print(f"Failed loading crash: {e}")
 
     # ---- Load Lottery extension ----
     try:
-        await bot.load_extension("lottery_daily")          # file: lottery_daily.py
+        await bot.load_extension("src.games.lottery_daily")
         print("Loaded lottery_daily cog ✅")
     except Exception as e:
         print(f"Failed loading lottery_daily: {e}")
 
     # ---- Load Poker-Lite extension ----
     try:
-        await bot.load_extension("poker_lite")             # file: poker_lite.py
+        await bot.load_extension("src.games.poker_lite")
         print("Loaded poker_lite cog ✅")
     except Exception as e:
         print(f"Failed loading poker_lite: {e}")
+
+    # ---- Load Currency System extension ----
+    try:
+        await bot.load_extension("src.bot.extensions.currency_system")
+        print("Loaded currency_system cog ✅")
+    except Exception as e:
+        print(f"Failed loading currency_system: {e}")
 
 @bot.event
 async def on_ready():
@@ -103,7 +110,7 @@ async def sync_commands(interaction: discord.Interaction):
     try:
         # Hot-reload known extensions so new/changed cog commands are registered
         reloaded = []
-        for ext in ("duel_royale", "fun", "horse_race_engauge"):
+        for ext in ("duel_royale", "fun", "horse_race_engauge", "currency_system"):
             if ext in bot.extensions:
                 try:
                     await bot.reload_extension(ext)

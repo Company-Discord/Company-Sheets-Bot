@@ -7,9 +7,9 @@ import time
 import discord
 from discord.ext import commands
 from discord import app_commands
-from unbelievaboat_api import Client, quick_get_balance, quick_get_leaderboard
+from src.api.unbelievaboat_api import Client, quick_get_balance, quick_get_leaderboard
 from dotenv import load_dotenv
-from utils import check_user_balances, send_insufficient_funds_message, initialize_unb_client, close_unb_client, get_unb_client
+from src.utils.utils import check_user_balances, send_insufficient_funds_message, initialize_unb_client, close_unb_client, get_unb_client
 
 load_dotenv()
 # ========= Tunables =========
