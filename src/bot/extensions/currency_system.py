@@ -103,6 +103,7 @@ class CurrencyDatabase:
     def __init__(self, db_path: str = DATABASE_PATH):
         self.db_path = db_path
         self._lock = asyncio.Lock()
+        self._initialized = False
     
     async def init_database(self):
         """Initialize the database with required tables."""
@@ -200,9 +201,23 @@ class CurrencyDatabase:
 
                 await db.commit()
                 
-                # Migrate existing guild settings to new default cooldowns
-                await self.migrate_guild_settings()
-                await self.migrate_role_salary()
+                # Check if migrations have already been run
+                migration_completed = await self.check_migration_status()
+                if not migration_completed:
+                    # Migrate existing guild settings to new default cooldowns
+                    await self.migrate_guild_settings()
+                    await self.migrate_role_salary()
+                    await self.mark_migration_complete()
+                else:
+                    print("ℹ️  Database migrations already completed, skipping...")
+                
+                self._initialized = True
+    
+    async def ensure_initialized(self):
+        """Ensure database is initialized before operations."""
+        if not self._initialized:
+            await self.init_database()
+    
     async def migrate_role_salary(self):
         """
         Load role data using get_role_data() and insert/update into role_salary table.
@@ -255,7 +270,8 @@ class CurrencyDatabase:
                 # Column might already exist, that's okay
                 print(f"ℹ️  last_collect column may already exist: {e}")
             
-            # Update ALL existing guild settings with new percentage values from DEFAULT_SETTINGS
+            # Only update guild settings that don't have the new percentage columns set
+            # This prevents overwriting existing custom settings on every restart
             await db.execute("""
                 UPDATE guild_settings 
                 SET work_cooldown = ?, 
@@ -270,6 +286,7 @@ class CurrencyDatabase:
                     crime_max_percent = ?,
                     rob_min_percent = ?,
                     rob_max_percent = ?
+                WHERE work_min_percent IS NULL OR work_min_percent = 0.0
             """, (
                 DEFAULT_SETTINGS["work_cooldown"],
                 DEFAULT_SETTINGS["slut_cooldown"],
@@ -285,7 +302,58 @@ class CurrencyDatabase:
                 DEFAULT_SETTINGS["rob_max_percent"]
             ))
             await db.commit()
-            print("✅ Migrated existing guild settings to new percentage-based earnings")
+            print("✅ Migrated guild settings to new percentage-based earnings (only for uninitialized settings)")
+    
+    async def check_migration_status(self) -> bool:
+        """Check if migrations have already been completed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                # Check if migration tracking table exists
+                async with db.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='migration_status'
+                """) as cursor:
+                    table_exists = await cursor.fetchone() is not None
+                
+                if not table_exists:
+                    return False
+                
+                # Check if migration is marked as complete
+                async with db.execute("""
+                    SELECT completed FROM migration_status 
+                    WHERE migration_name = 'currency_system_v1'
+                """) as cursor:
+                    result = await cursor.fetchone()
+                    return result is not None and result[0] == 1
+                    
+            except Exception as e:
+                print(f"⚠️  Error checking migration status: {e}")
+                return False
+    
+    async def mark_migration_complete(self):
+        """Mark migrations as completed."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                # Create migration tracking table if it doesn't exist
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS migration_status (
+                        migration_name TEXT PRIMARY KEY,
+                        completed BOOLEAN DEFAULT 0,
+                        completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                
+                # Mark this migration as complete
+                await db.execute("""
+                    INSERT OR REPLACE INTO migration_status (migration_name, completed, completed_at)
+                    VALUES ('currency_system_v1', 1, CURRENT_TIMESTAMP)
+                """)
+                
+                await db.commit()
+                print("✅ Marked currency system migration as complete")
+                
+            except Exception as e:
+                print(f"⚠️  Error marking migration complete: {e}")
     
     async def migrate_collect_cooldown(self):
         """Ensure collect_cooldown column exists in guild_settings table."""
@@ -321,6 +389,7 @@ class CurrencyDatabase:
     
     async def get_user_balance(self, user_id: int, guild_id: int) -> UserBalance:
         """Get user's balance information."""
+        await self.ensure_initialized()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
@@ -372,6 +441,7 @@ class CurrencyDatabase:
                                 last_rob: Optional[datetime] = None,
                                 last_collect: Optional[datetime] = None):
         """Update user's balance and stats."""
+        await self.ensure_initialized()
         async with aiosqlite.connect(self.db_path) as db:
             # Ensure user exists
             await self.create_user(user_id, guild_id)
@@ -454,6 +524,7 @@ class CurrencyDatabase:
     
     async def get_guild_settings(self, guild_id: int) -> GuildSettings:
         """Get guild economy settings."""
+        await self.ensure_initialized()
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("""
