@@ -345,7 +345,9 @@ class PokerView(discord.ui.View):
             inline=False
         )
         e.add_field(name="Bet", value=fmt_tc(self.state.bet))
-        e.set_footer(text=self.result_text or "")
+        if self.result_text:
+            e.add_field(name="Result", value=self.result_text, inline=False)
+        # e.set_footer(text=self.result_text or "")
         return e
 
 # =================== Cog ===================
