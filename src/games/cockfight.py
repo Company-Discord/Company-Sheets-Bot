@@ -1,5 +1,4 @@
 # src/games/cockfight.py
-import os
 import asyncio
 import random
 import time
@@ -11,51 +10,50 @@ from discord import app_commands
 from discord.ext import commands
 import aiosqlite
 
-# ✅ Use helpers from utils.py
-from src.utils.utils import (
-    get_user_balance as utils_get_balance,
-    debit_user as utils_debit,
-    credit_user as utils_credit,
-    is_admin_or_manager,
-)
+# Only import the permission helper
+from src.utils.utils import is_admin_or_manager
 
 BASE_WIN_PERCENT = 50.0         # base chance %
-PER_USER_LIMIT = 5              # max cockfights per rolling 60s
+PER_USER_LIMIT = 5              # max cockfights per rolling 60s (per user)
 PER_USER_WINDOW = 60.0          # seconds
-BUTTON_COOLDOWN_SECONDS = 2     # pause after clicking "Bet Again"
-
-# Streak storage in your mounted volume
-DB_PATH = "data/databases/cockfight.db"
+BUTTON_COOLDOWN_SECONDS = 2     # small pause after clicking "Bet Again"
 STREAKS_TABLE = "cockfight_streaks"
 
 
-async def _ensure_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(f"""
-            CREATE TABLE IF NOT EXISTS {STREAKS_TABLE} (
-                user_id INTEGER,
-                guild_id INTEGER,
-                streak  INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, guild_id)
-            )
-        """)
-        await db.commit()
-
-
 class CockfightCog(commands.Cog):
-    """Cockfight betting (admin/manager only)."""
+    """Cockfight betting that uses the custom CurrencySystem (admin/manager only)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.econ = None  # will be set to the loaded CurrencySystem cog
         self._rate: dict[int, deque[float]] = {}
 
     async def cog_load(self):
-        await _ensure_db()
+        """
+        Grab the CurrencySystem cog and create the streaks table in the SAME DB file.
+        """
+        self.econ = self.bot.get_cog("CurrencySystem")
+        if not self.econ or not hasattr(self.econ, "db"):
+            raise RuntimeError(
+                "Cockfight requires the CurrencySystem cog to be loaded first "
+                "so it can reuse the same database and methods."
+            )
+
+        # Ensure the streaks table exists in the SAME SQLite database
+        async with aiosqlite.connect(self.econ.db.db_path) as db:
+            await db.execute(f"""
+                CREATE TABLE IF NOT EXISTS {STREAKS_TABLE} (
+                    user_id INTEGER,
+                    guild_id INTEGER,
+                    streak INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+            """)
+            await db.commit()
 
     # ------------------ streak helpers ------------------
     async def _get_streak(self, user_id: int, guild_id: int) -> int:
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with aiosqlite.connect(self.econ.db.db_path) as db:
             async with db.execute(
                 f"SELECT streak FROM {STREAKS_TABLE} WHERE user_id=? AND guild_id=?",
                 (user_id, guild_id),
@@ -71,7 +69,7 @@ class CockfightCog(commands.Cog):
         return 0
 
     async def _set_streak(self, user_id: int, guild_id: int, streak: int):
-        async with aiosqlite.connect(DB_PATH) as db:
+        async with aiosqlite.connect(self.econ.db.db_path) as db:
             await db.execute(
                 f"""
                 INSERT INTO {STREAKS_TABLE}(user_id,guild_id,streak)
@@ -84,6 +82,7 @@ class CockfightCog(commands.Cog):
 
     # ------------------ chance / roll ------------------
     def _compute_win_chance(self, streak: int) -> float:
+        # base 50 + 1% per existing (pre-fight) consecutive win
         return BASE_WIN_PERCENT + float(streak)
 
     def _roll_win(self, win_percent: float) -> bool:
@@ -91,6 +90,9 @@ class CockfightCog(commands.Cog):
 
     # ------------------ rate limiting ------------------
     def _check_rate_limit(self, user_id: int) -> Optional[float]:
+        """
+        Rolling-window limiter: returns None if allowed, else seconds until allowed again.
+        """
         now = time.monotonic()
         dq = self._rate.setdefault(user_id, deque())
         while dq and (now - dq[0]) > PER_USER_WINDOW:
@@ -124,9 +126,11 @@ class CockfightCog(commands.Cog):
 
         @discord.ui.button(label="Bet Again", style=discord.ButtonStyle.primary, custom_id="cockfight_bet_again")
         async def bet_again(self, interaction: discord.Interaction, button: discord.ui.Button):
+            # grey out immediately (one-time use)
             button.disabled = True
             await interaction.response.edit_message(view=self)
 
+            # rate limit check
             wait = self.cog._check_rate_limit(self.user_id)
             if wait is not None:
                 await interaction.followup.send(
@@ -137,10 +141,12 @@ class CockfightCog(commands.Cog):
             await asyncio.sleep(BUTTON_COOLDOWN_SECONDS)
             await self.cog._handle_bet(interaction, interaction.user, self.bet, from_button=True)
 
-    # ------------------ slash commands ------------------
+    # ------------------ slash commands (admin only) ------------------
     @is_admin_or_manager()
     @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
+    @app_commands.describe(bet="Amount to bet (positive integer, taken from your custom currency cash)")
     async def cockfight(self, interaction: discord.Interaction, bet: int):
+        # rate limit fast-path
         wait = self._check_rate_limit(interaction.user.id)
         if wait is not None:
             await interaction.response.send_message(
@@ -165,7 +171,7 @@ class CockfightCog(commands.Cog):
             ephemeral=True,
         )
 
-    # ------------------ core handler ------------------
+    # ------------------ core handler (uses custom currency DB) ------------------
     async def _handle_bet(
         self,
         ctx_or_inter: discord.Interaction | commands.Context,
@@ -187,26 +193,42 @@ class CockfightCog(commands.Cog):
         if bet <= 0:
             return await send("Bet must be greater than zero.", ephemeral=is_inter and not from_button)
 
-        # Balance check via your utils
-        cash = await utils_get_balance(guild_id, user_id)
-        if cash < bet:
+        # === Use your custom currency system via CurrencySystem.db ===
+        # Check cash
+        user_balance = await self.econ.db.get_user_balance(user_id, guild_id)
+        if user_balance.cash < bet:
             return await send(
-                f"You only have {cash:,} — can't bet {bet:,}.",
+                f"You only have {user_balance.cash:,} — can't bet {bet:,}.",
                 ephemeral=is_inter and not from_button,
             )
 
-        # Deduct stake up front
-        await utils_debit(guild_id, user_id, bet, reason=f"Cockfight bet {bet}")
+        # Deduct stake up-front (cash -bet; total_spent +bet) and log
+        await self.econ.db.update_user_balance(
+            user_id, guild_id,
+            cash_delta=-bet,
+            total_spent_delta=bet,
+        )
+        await self.econ.db.log_transaction(
+            user_id, guild_id, -bet, "cockfight_bet", success=True, reason=f"Placed cockfight bet {bet}"
+        )
 
-        # Roll with streak chance
-        streak = await self._get_streak(user_id, guild_id)
+        # Roll using current streak
+        streak = await self._get_streak(user_id, guild_id)     # pre-fight streak
         win_chance = self._compute_win_chance(streak)
         won = self._roll_win(win_chance)
 
         if won:
-            # Credit winnings equal to bet (net +bet)
-            await utils_credit(guild_id, user_id, bet, reason=f"Cockfight win +{bet}")
+            # Credit winnings equal to bet (net +bet) and log
+            await self.econ.db.update_user_balance(
+                user_id, guild_id,
+                cash_delta=bet,
+                total_earned_delta=bet,
+            )
+            await self.econ.db.log_transaction(
+                user_id, guild_id, bet, "cockfight_win", success=True, reason=f"Won cockfight, profit {bet}"
+            )
 
+            # Increase streak AFTER win
             streak += 1
             await self._set_streak(user_id, guild_id, streak)
 
@@ -230,11 +252,16 @@ class CockfightCog(commands.Cog):
                 ),
                 color=discord.Color.green(),
             )
+
             view = self.BetAgainView(self, user_id, bet)
             await send(embed=embed, view=view)
 
         else:
+            # Loss → keep the earlier -bet transaction as the loss; reset streak
             await self._set_streak(user_id, guild_id, 0)
+            await self.econ.db.log_transaction(
+                user_id, guild_id, -bet, "cockfight_loss", success=False, reason=f"Lost cockfight, lost {bet}"
+            )
 
             funny_loss = random.choice([
                 "❌ Your chicken lost the fight and died. 💀🐓",
