@@ -6,6 +6,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from src.utils.utils import is_admin_or_manager
+
 # ================= Env & config ==================
 load_dotenv()
 
@@ -103,7 +105,7 @@ async def on_ready():
         print("Command sync failed:", e)
 
 # ================= Admin sync helpers =================
-@app_commands.default_permissions(administrator=True)
+@is_admin_or_manager()
 @tree.command(name="sync_commands", description="Force-resync slash commands globally (admin only).")
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)

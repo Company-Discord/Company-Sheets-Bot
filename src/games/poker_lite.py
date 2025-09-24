@@ -11,7 +11,7 @@ import aiosqlite
 
 # =================== Import External APIs ===================
 from src.utils.utils import (
-    get_unb_client, credit_user, debit_user, get_user_balance
+    get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
 )
 from src.api.unbelievaboat_api import UnbelievaBoatError  
 
@@ -422,6 +422,7 @@ class PokerLite(commands.Cog):
     # ----- Commands -----
     @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
+    @is_admin_or_manager()
     async def poker(self, interaction: discord.Interaction, bet: int):
         """Main game command — bet is required, no max, must be > 0."""
         if interaction.guild_id is None:
@@ -497,6 +498,7 @@ class PokerLite(commands.Cog):
 
     @app_commands.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
+    @is_admin_or_manager()
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
@@ -539,6 +541,7 @@ class PokerLite(commands.Cog):
         app_commands.Choice(name="net", value="net"),
         app_commands.Choice(name="wins", value="wins")
     ])
+    @is_admin_or_manager()
     async def poker_leaderboard(
         self,
         interaction: discord.Interaction,
