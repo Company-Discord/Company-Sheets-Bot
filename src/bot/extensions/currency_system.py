@@ -22,7 +22,7 @@ import pytz
 from src.utils.utils import is_admin_or_manager
 from src.utils.utils import get_role_data
 # ================= Configuration =================
-CURRENCY_EMOJI = os.getenv("CURRENCY_EMOJI", "💰")
+CURRENCY_EMOJI = os.getenv("TC_EMOJI", "💰")
 DATABASE_PATH = "data/databases/currency.db"
 
 # Default economy settings
@@ -531,13 +531,6 @@ class CurrencySystem(commands.Cog):
         self.work_quips = self.load_work_quips()
         self.slut_quips = self.load_slut_quips()
         self.crime_quips = self.load_crime_quips()
-        
-        # Optional: scope slash commands to a single guild for faster registration
-        guild_id = os.getenv("DISCORD_GUILD_ID")
-        if guild_id:
-            guild_obj = discord.Object(id=int(guild_id))
-            for cmd in self.__cog_app_commands__:
-                cmd.guild = guild_obj
     
     def load_work_quips(self) -> List[str]:
         """Load work quips from JSON file."""
@@ -597,6 +590,13 @@ class CurrencySystem(commands.Cog):
         """Initialize database when cog loads."""
         await self.db.init_database()
         print("✅ Currency system database initialized")
+        
+        # Optional: scope slash commands to a single guild for faster registration
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild_obj = discord.Object(id=int(guild_id))
+            for cmd in self.__cog_app_commands__:
+                cmd.guild = guild_obj
     
     def format_currency(self, amount: int, symbol: str = CURRENCY_EMOJI) -> str:
         """Format currency amount with symbol."""
