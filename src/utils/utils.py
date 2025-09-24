@@ -1,11 +1,70 @@
 import discord
 from discord import app_commands
 import os
+import json
+from typing import Dict, Any, Optional
 from src.api.unbelievaboat_api import Client
 from dotenv import load_dotenv
 
 load_dotenv()
 MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
+
+# Role data parsing utilities
+def get_role_data() -> Dict[str, Dict[str, int]]:
+    """
+    Parse role data from environment variable.
+    
+    Returns:
+        Dictionary with role names as keys and dicts containing 'id' and 'salary' as values
+        Example: {"Coordinator": {"id": 1, "salary": 11000}, ...}
+    """
+    role_data_str = os.getenv("ROLE_DATA", "{}")
+    try:
+        return json.loads(role_data_str)
+    except json.JSONDecodeError as e:
+        print(f"Warning: Failed to parse ROLE_DATA environment variable: {e}")
+        return {}
+
+
+def get_role_by_name(role_name: str) -> Optional[Dict[str, int]]:
+    """
+    Get role information by name.
+    
+    Args:
+        role_name: Name of the role to look up
+        
+    Returns:
+        Dictionary with 'id' and 'salary' keys, or None if role not found
+    """
+    role_data = get_role_data()
+    return role_data.get(role_name)
+
+
+def get_role_by_id(role_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get role information by ID.
+    
+    Args:
+        role_id: ID of the role to look up
+        
+    Returns:
+        Dictionary with role name as key and role info as value, or None if not found
+    """
+    role_data = get_role_data()
+    for role_name, role_info in role_data.items():
+        if role_info.get("id") == role_id:
+            return {role_name: role_info}
+    return None
+
+
+def get_all_roles() -> Dict[str, Dict[str, int]]:
+    """
+    Get all role data.
+    
+    Returns:
+        Complete dictionary of all roles with their IDs and salaries
+    """
+    return get_role_data()
 
 # Global UnbelievaBoat client
 _unb_client: Client = None

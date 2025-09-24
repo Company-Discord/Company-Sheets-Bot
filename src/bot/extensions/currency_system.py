@@ -17,9 +17,10 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
+import pytz
 
 from src.utils.utils import is_admin_or_manager
-
+from src.utils.utils import get_role_data
 # ================= Configuration =================
 CURRENCY_EMOJI = os.getenv("CURRENCY_EMOJI", "💰")
 DATABASE_PATH = "data/databases/currency.db"
@@ -31,6 +32,7 @@ DEFAULT_SETTINGS = {
     "slut_cooldown": 90,  # 1 minute 30 seconds
     "crime_cooldown": 180,  # 3 minutes
     "rob_cooldown": 900,  # 15 minutes
+    "collect_cooldown": 86400,  # 24 hours (daily salary)
     "work_min_percent": 0.01,  # 1% of total balance
     "work_max_percent": 0.05,  # 5% of total balance
     "slut_min_percent": 0.02,  # 2% of total balance
@@ -61,6 +63,7 @@ class UserBalance:
     last_slut: Optional[datetime] = None
     last_crime: Optional[datetime] = None
     last_rob: Optional[datetime] = None
+    last_collect: Optional[datetime] = None
 
 @dataclass
 class Transaction:
@@ -82,6 +85,7 @@ class GuildSettings:
     slut_cooldown: int = 90
     crime_cooldown: int = 180
     rob_cooldown: int = 900
+    collect_cooldown: int = 86400  # 24 hours (daily salary)
     work_min_percent: float = 0.01  # 1% of total balance
     work_max_percent: float = 0.05  # 5% of total balance
     slut_min_percent: float = 0.02  # 2% of total balance
@@ -124,6 +128,7 @@ class CurrencyDatabase:
                         last_slut TIMESTAMP,
                         last_crime TIMESTAMP,
                         last_rob TIMESTAMP,
+                        last_collect TIMESTAMP,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (user_id, guild_id)
@@ -154,6 +159,7 @@ class CurrencyDatabase:
                         slut_cooldown INTEGER DEFAULT 90,
                         crime_cooldown INTEGER DEFAULT 180,
                         rob_cooldown INTEGER DEFAULT 900,
+                        collect_cooldown INTEGER DEFAULT 86400,
                         work_min_percent REAL DEFAULT 0.01,
                         work_max_percent REAL DEFAULT 0.05,
                         slut_min_percent REAL DEFAULT 0.02,
@@ -169,11 +175,59 @@ class CurrencyDatabase:
                     )
                 """)
                 
+                # Role salary table
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS role_salary (
+                        name TEXT PRIMARY KEY,
+                        role_id INTEGER NOT NULL,
+                        salary INTEGER NOT NULL
+                    )
+                """)
+
+                # Add collect_cooldown column to guild_settings if it doesn't exist
+                try:
+                    await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
+                except Exception:
+                    # Column might already exist, that's okay
+                    pass
+                
+                # Add last_collect column to user_balances if it doesn't exist
+                try:
+                    await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
+                except Exception:
+                    # Column might already exist, that's okay
+                    pass
+
                 await db.commit()
                 
                 # Migrate existing guild settings to new default cooldowns
                 await self.migrate_guild_settings()
-    
+                await self.migrate_role_salary()
+    async def migrate_role_salary(self):
+        """
+        Load role data using get_role_data() and insert/update into role_salary table.
+        Columns: name (role_name), role_id, salary
+        """
+        role_data = get_role_data()
+        if not isinstance(role_data, dict):
+            print("⚠️ ROLE_DATA is not a dict.")
+            return
+
+        async with aiosqlite.connect(self.db_path) as db:
+            for role_name, info in role_data.items():
+                role_id = info.get("id")
+                salary = info.get("salary")
+                if role_id is None or salary is None:
+                    print(f"⚠️ Skipping role '{role_name}' due to missing id or salary.")
+                    continue
+                await db.execute("""
+                    INSERT INTO role_salary (name, role_id, salary)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(name) DO UPDATE SET role_id=excluded.role_id, salary=excluded.salary
+                """, (role_name, role_id, salary))
+            await db.commit()
+        print("✅ Migrated role salary data from ROLE_DATA to role_salary table.")
+
     async def migrate_guild_settings(self):
         """Migrate existing guild settings to new percentage-based earnings."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -187,10 +241,19 @@ class CurrencyDatabase:
                 await db.execute("ALTER TABLE guild_settings ADD COLUMN crime_max_percent REAL DEFAULT 0.12")
                 await db.execute("ALTER TABLE guild_settings ADD COLUMN rob_min_percent REAL DEFAULT 0.02")
                 await db.execute("ALTER TABLE guild_settings ADD COLUMN rob_max_percent REAL DEFAULT 0.08")
+                await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
                 print("✅ Added new percentage columns to guild_settings table")
             except Exception as e:
                 # Columns might already exist, that's okay
                 print(f"ℹ️  Percentage columns may already exist: {e}")
+            
+            # Add last_collect column to user_balances table if it doesn't exist
+            try:
+                await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
+                print("✅ Added last_collect column to user_balances table")
+            except Exception as e:
+                # Column might already exist, that's okay
+                print(f"ℹ️  last_collect column may already exist: {e}")
             
             # Update ALL existing guild settings with new percentage values from DEFAULT_SETTINGS
             await db.execute("""
@@ -198,6 +261,7 @@ class CurrencyDatabase:
                 SET work_cooldown = ?, 
                     slut_cooldown = ?, 
                     crime_cooldown = ?,
+                    collect_cooldown = ?,
                     work_min_percent = ?,
                     work_max_percent = ?,
                     slut_min_percent = ?,
@@ -210,6 +274,7 @@ class CurrencyDatabase:
                 DEFAULT_SETTINGS["work_cooldown"],
                 DEFAULT_SETTINGS["slut_cooldown"],
                 DEFAULT_SETTINGS["crime_cooldown"],
+                DEFAULT_SETTINGS["collect_cooldown"],
                 DEFAULT_SETTINGS["work_min_percent"],
                 DEFAULT_SETTINGS["work_max_percent"],
                 DEFAULT_SETTINGS["slut_min_percent"],
@@ -221,6 +286,38 @@ class CurrencyDatabase:
             ))
             await db.commit()
             print("✅ Migrated existing guild settings to new percentage-based earnings")
+    
+    async def migrate_collect_cooldown(self):
+        """Ensure collect_cooldown column exists in guild_settings table."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                # Check if collect_cooldown column exists
+                async with db.execute("PRAGMA table_info(guild_settings)") as cursor:
+                    columns = [row[1] for row in await cursor.fetchall()]
+                    if "collect_cooldown" not in columns:
+                        await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
+                        await db.commit()
+                        print("✅ Added collect_cooldown column to guild_settings table")
+                    else:
+                        print("ℹ️  collect_cooldown column already exists")
+            except Exception as e:
+                print(f"⚠️  Error checking/adding collect_cooldown column: {e}")
+    
+    async def migrate_last_collect(self):
+        """Ensure last_collect column exists in user_balances table."""
+        async with aiosqlite.connect(self.db_path) as db:
+            try:
+                # Check if last_collect column exists
+                async with db.execute("PRAGMA table_info(user_balances)") as cursor:
+                    columns = [row[1] for row in await cursor.fetchall()]
+                    if "last_collect" not in columns:
+                        await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
+                        await db.commit()
+                        print("✅ Added last_collect column to user_balances table")
+                    else:
+                        print("ℹ️  last_collect column already exists")
+            except Exception as e:
+                print(f"⚠️  Error checking/adding last_collect column: {e}")
     
     async def get_user_balance(self, user_id: int, guild_id: int) -> UserBalance:
         """Get user's balance information."""
@@ -247,7 +344,8 @@ class CurrencyDatabase:
                         last_work=datetime.fromisoformat(row["last_work"]) if row["last_work"] else None,
                         last_slut=datetime.fromisoformat(row["last_slut"]) if row["last_slut"] else None,
                         last_crime=datetime.fromisoformat(row["last_crime"]) if row["last_crime"] else None,
-                        last_rob=datetime.fromisoformat(row["last_rob"]) if row["last_rob"] else None
+                        last_rob=datetime.fromisoformat(row["last_rob"]) if row["last_rob"] else None,
+                        last_collect=datetime.fromisoformat(row["last_collect"]) if row["last_collect"] else None
                     )
                 else:
                     # Create new user record
@@ -271,7 +369,8 @@ class CurrencyDatabase:
                                 last_work: Optional[datetime] = None,
                                 last_slut: Optional[datetime] = None,
                                 last_crime: Optional[datetime] = None,
-                                last_rob: Optional[datetime] = None):
+                                last_rob: Optional[datetime] = None,
+                                last_collect: Optional[datetime] = None):
         """Update user's balance and stats."""
         async with aiosqlite.connect(self.db_path) as db:
             # Ensure user exists
@@ -329,6 +428,10 @@ class CurrencyDatabase:
                 updates.append("last_rob = ?")
                 params.append(last_rob.isoformat())
             
+            if last_collect:
+                updates.append("last_collect = ?")
+                params.append(last_collect.isoformat())
+            
             if updates:
                 updates.append("updated_at = CURRENT_TIMESTAMP")
                 query = f"UPDATE user_balances SET {', '.join(updates)} WHERE user_id = ? AND guild_id = ?"
@@ -366,6 +469,7 @@ class CurrencyDatabase:
                         slut_cooldown=row["slut_cooldown"],
                         crime_cooldown=row["crime_cooldown"],
                         rob_cooldown=row["rob_cooldown"],
+                        collect_cooldown=row["collect_cooldown"],
                         work_min_percent=row["work_min_percent"],
                         work_max_percent=row["work_max_percent"],
                         slut_min_percent=row["slut_min_percent"],
@@ -513,6 +617,52 @@ class CurrencySystem(commands.Cog):
             else:
                 return f"{hours}h {minutes}m"
     
+    def get_next_reset_time(self) -> datetime:
+        """Get the next 11AM EST reset time."""
+        # Get EST timezone
+        est = pytz.timezone('US/Eastern')
+        now_est = datetime.now(est)
+        
+        # Calculate next 11AM EST
+        next_reset = now_est.replace(hour=11, minute=0, second=0, microsecond=0)
+        if now_est >= next_reset:
+            # If it's already past 11AM today, next reset is tomorrow
+            next_reset += timedelta(days=1)
+        
+        # Ensure the result is timezone-aware
+        return next_reset
+    
+    async def has_collected_today(self, user_id: int, guild_id: int) -> bool:
+        """Check if user has already collected salary today (since last 11AM EST reset)."""
+        # Get EST timezone
+        est = pytz.timezone('US/Eastern')
+        now_est = datetime.now(est)
+        
+        # Calculate today's reset time (11AM EST)
+        today_reset = now_est.replace(hour=11, minute=0, second=0, microsecond=0)
+        
+        # If it's before 11AM today, check against yesterday's reset
+        if now_est < today_reset:
+            today_reset -= timedelta(days=1)
+        
+        # Get user's last collect time
+        user_balance = await self.db.get_user_balance(user_id, guild_id)
+        
+        if user_balance.last_collect is None:
+            return False
+        
+        # Handle timezone conversion properly
+        if user_balance.last_collect.tzinfo is None:
+            # If last_collect is naive, assume it's UTC and convert to EST
+            last_collect_utc = pytz.UTC.localize(user_balance.last_collect)
+            last_collect_est = last_collect_utc.astimezone(est)
+        else:
+            # If last_collect already has timezone info, convert to EST
+            last_collect_est = user_balance.last_collect.astimezone(est)
+        
+        # Check if last collect was after today's reset
+        return last_collect_est >= today_reset
+    
     async def check_cooldown(self, user_id: int, guild_id: int, command: str) -> Tuple[bool, int]:
         """Check if user is on cooldown for a command. Returns (can_use, seconds_remaining)."""
         user = await self.db.get_user_balance(user_id, guild_id)
@@ -534,6 +684,9 @@ class CurrencySystem(commands.Cog):
         elif command == "rob":
             last_used = user.last_rob
             cooldown_seconds = settings.rob_cooldown
+        elif command == "collect":
+            last_used = user.last_collect
+            cooldown_seconds = settings.collect_cooldown
         
         if last_used is None:
             return True, 0
@@ -550,6 +703,7 @@ class CurrencySystem(commands.Cog):
     
     # ================= Work Command =================
     @economy.command(name="work", description="Earn money through legitimate work")
+    @is_admin_or_manager()
     async def work(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
         user_id = interaction.user.id
@@ -912,6 +1066,118 @@ class CurrencySystem(commands.Cog):
         
         await interaction.response.send_message(embed=embed)
     
+    # ================= Collect Command =================
+    @economy.command(name="collect", description="Collect salary from your roles")
+    @is_admin_or_manager()
+    async def collect(self, interaction: discord.Interaction):
+        """Collect salary from user's roles."""
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+        
+        # Check if user has already collected today (daily reset at 11AM EST)
+        if await self.has_collected_today(user_id, guild_id):
+            # Calculate time until next reset (11AM EST tomorrow)
+            next_reset = self.get_next_reset_time()
+            now_est = datetime.now(pytz.timezone('US/Eastern'))
+            time_until_reset = (next_reset - now_est).total_seconds()
+            
+            embed = discord.Embed(
+                title="⏰ Already Collected Today",
+                description=f"You've already collected your salary today! Next reset in {self.format_time_remaining(int(time_until_reset))}.",
+                color=discord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check if user has any roles
+        if not interaction.user.roles:
+            embed = discord.Embed(
+                title="❌ No Roles",
+                description="You don't have any roles to collect salary from!",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Get role salary data from database
+        async with aiosqlite.connect(self.db.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT name, role_id, salary FROM role_salary") as cursor:
+                role_salaries = {row["name"]: {"id": row["role_id"], "salary": row["salary"]} for row in await cursor.fetchall()}
+        
+        if not role_salaries:
+            embed = discord.Embed(
+                title="❌ No Salary Data",
+                description="No role salary data is configured! Contact an administrator.",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check user's roles and calculate total salary
+        total_salary = 0
+        salary_breakdown = []
+        user_roles = [role.name for role in interaction.user.roles if role.name != "@everyone"]
+        
+        for role_name in user_roles:
+            if role_name in role_salaries:
+                salary = role_salaries[role_name]["salary"]
+                total_salary += salary
+                salary_breakdown.append(f"**{role_name}**: {self.format_currency(salary)}")
+        
+        if total_salary == 0:
+            embed = discord.Embed(
+                title="❌ No Salary Roles",
+                description="None of your roles have salary configured!",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Add salary to user's bank
+        await self.db.update_user_balance(
+            user_id, guild_id,
+            bank_delta=total_salary,
+            total_earned_delta=total_salary,
+            last_collect=datetime.now()
+        )
+        
+        # Log transaction
+        settings = await self.db.get_guild_settings(guild_id)
+        await self.db.log_transaction(
+            user_id, guild_id, total_salary, "collect", success=True,
+            reason=f"Salary deposited to bank from {len(salary_breakdown)} role(s)"
+        )
+        
+        # Create response embed
+        embed = discord.Embed(
+            title="💰 Salary Deposited!",
+            description=f"Your salary from {len(salary_breakdown)} role(s) has been deposited to your bank!",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="💵 Total Salary",
+            value=self.format_currency(total_salary, settings.currency_symbol),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📋 Salary Breakdown",
+            value="\n".join(salary_breakdown),
+            inline=False
+        )
+        
+        # Add next reset time
+        next_reset = self.get_next_reset_time()
+        embed.add_field(
+            name="🔄 Next Reset",
+            value=f"Salary resets daily at 11AM EST\nNext reset: <t:{int(next_reset.timestamp())}:F>",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed)
+
     # ================= Balance Command =================
     @economy.command(name="balance", description="Check your balance and stats")
     @is_admin_or_manager()

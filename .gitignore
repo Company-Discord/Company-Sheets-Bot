@@ -2,7 +2,4 @@
 service_account.json
 __pycache__/
 venv/
-.db
-.db*
-data/databases/
-data/databases/*
+*.db*
