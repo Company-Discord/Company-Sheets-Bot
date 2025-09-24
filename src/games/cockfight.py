@@ -11,10 +11,13 @@ from discord import app_commands
 from discord.ext import commands
 import aiosqlite
 
-# ✅ Use your utils helpers (UnbelievaBoat-backed currency)
-from src.utils.utils import get_user_balance as utils_get_balance
-from src.utils.utils import debit_user as utils_debit
-from src.utils.utils import credit_user as utils_credit
+# ✅ Use helpers from utils.py
+from src.utils.utils import (
+    get_user_balance as utils_get_balance,
+    debit_user as utils_debit,
+    credit_user as utils_credit,
+    is_admin_or_manager,
+)
 
 BASE_WIN_PERCENT = 50.0         # base chance %
 PER_USER_LIMIT = 5              # max cockfights per rolling 60s
@@ -41,7 +44,7 @@ async def _ensure_db():
 
 
 class CockfightCog(commands.Cog):
-    """Cockfight betting that uses your utils.py currency helpers (UnbelievaBoat-backed)."""
+    """Cockfight betting (admin/manager only)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -81,7 +84,6 @@ class CockfightCog(commands.Cog):
 
     # ------------------ chance / roll ------------------
     def _compute_win_chance(self, streak: int) -> float:
-        # base 50 + 1% per existing (pre-fight) consecutive win
         return BASE_WIN_PERCENT + float(streak)
 
     def _roll_win(self, win_percent: float) -> bool:
@@ -107,18 +109,24 @@ class CockfightCog(commands.Cog):
             self.bet = bet
 
         async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            # Only allow the same admin/manager who triggered the command
             if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This button isn’t for you.", ephemeral=True)
+                await interaction.response.send_message(
+                    "This button isn’t for you.", ephemeral=True
+                )
+                return False
+            if not await is_admin_or_manager().predicate(interaction):
+                await interaction.response.send_message(
+                    "You don’t have permission to use this.", ephemeral=True
+                )
                 return False
             return True
 
         @discord.ui.button(label="Bet Again", style=discord.ButtonStyle.primary, custom_id="cockfight_bet_again")
         async def bet_again(self, interaction: discord.Interaction, button: discord.ui.Button):
-            # Grey out immediately (one-time use)
             button.disabled = True
             await interaction.response.edit_message(view=self)
 
-            # Rate limit
             wait = self.cog._check_rate_limit(self.user_id)
             if wait is not None:
                 await interaction.followup.send(
@@ -133,7 +141,6 @@ class CockfightCog(commands.Cog):
     @is_admin_or_manager()
     @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
     async def cockfight(self, interaction: discord.Interaction, bet: int):
-        # Rate limit fast-path
         wait = self._check_rate_limit(interaction.user.id)
         if wait is not None:
             await interaction.response.send_message(
@@ -180,7 +187,7 @@ class CockfightCog(commands.Cog):
         if bet <= 0:
             return await send("Bet must be greater than zero.", ephemeral=is_inter and not from_button)
 
-        # Balance check via your utils (UnbelievaBoat)
+        # Balance check via your utils
         cash = await utils_get_balance(guild_id, user_id)
         if cash < bet:
             return await send(
@@ -188,20 +195,18 @@ class CockfightCog(commands.Cog):
                 ephemeral=is_inter and not from_button,
             )
 
-        # Deduct stake up front (cash -bet)
-        # We record the reason so it’s visible in your UnbelievaBoat logs
+        # Deduct stake up front
         await utils_debit(guild_id, user_id, bet, reason=f"Cockfight bet {bet}")
 
-        # Roll using current streak
-        streak = await self._get_streak(user_id, guild_id)     # pre-fight streak
+        # Roll with streak chance
+        streak = await self._get_streak(user_id, guild_id)
         win_chance = self._compute_win_chance(streak)
         won = self._roll_win(win_chance)
 
         if won:
-            # Credit winnings equal to bet (net profit +bet)
+            # Credit winnings equal to bet (net +bet)
             await utils_credit(guild_id, user_id, bet, reason=f"Cockfight win +{bet}")
 
-            # Increase streak and persist
             streak += 1
             await self._set_streak(user_id, guild_id, streak)
 
@@ -229,7 +234,6 @@ class CockfightCog(commands.Cog):
             await send(embed=embed, view=view)
 
         else:
-            # Loss → reset streak. (We already debited their stake above.)
             await self._set_streak(user_id, guild_id, 0)
 
             funny_loss = random.choice([
