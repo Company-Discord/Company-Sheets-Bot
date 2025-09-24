@@ -83,6 +83,13 @@ async def setup_hook():
         print("Loaded currency_system cog ✅")
     except Exception as e:
         print(f"Failed loading currency_system: {e}")
+    # ---- Load Cockfight extension ----
+    try:
+        await bot.load_extension("src.games.cockfight")
+        print("Loaded cockfight cog ✅")
+    except Exception as e:
+        print(f"Failed loading cockfight: {e}")
+
 
 @bot.event
 async def on_ready():
@@ -110,19 +117,19 @@ async def on_ready():
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        # Hot-reload known extensions so new/changed cog commands are registered
+        # Reload all currently loaded extensions (safe & future-proof)
         reloaded = []
-        for ext in ("duel_royale", "fun", "horse_race_engauge", "currency_system"):
-            if ext in bot.extensions:
-                try:
-                    await bot.reload_extension(ext)
-                    reloaded.append(ext)
-                except Exception as e:
-                    print(f"Failed to reload {ext}: {e}")
-        if reloaded:
-            print(f"Reloaded extensions: {', '.join(reloaded)}")
+        for ext_path in list(bot.extensions.keys()):
+            try:
+                await bot.reload_extension(ext_path)
+                reloaded.append(ext_path)
+            except Exception as e:
+                print(f"Failed to reload {ext_path}: {e}")
 
-        # Guild sync first if configured, copying globals for fast propagation
+        if reloaded:
+            print(f"Reloaded extensions:\n- " + "\n- ".join(reloaded))
+
+        # Guild sync first (fast propagation for testing)
         guild_id = os.getenv("DISCORD_GUILD_ID")
         guild_response = ""
         if guild_id:
@@ -139,7 +146,7 @@ async def sync_commands(interaction: discord.Interaction):
 
         response = f"✅ {guild_response}🌐 **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`"
         await interaction.followup.send(response, ephemeral=True)
-        
+
     except Exception as e:
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
         print("sync_commands error:", e)
