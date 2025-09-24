@@ -130,8 +130,8 @@ class CockfightCog(commands.Cog):
             await self.cog._handle_bet(interaction, interaction.user, self.bet, from_button=True)
 
     # ------------------ slash commands ------------------
+    @is_admin_or_manager()
     @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
-    @app_commands.describe(bet="Amount to bet (positive integer)")
     async def cockfight(self, interaction: discord.Interaction, bet: int):
         # Rate limit fast-path
         wait = self._check_rate_limit(interaction.user.id)
@@ -145,6 +145,7 @@ class CockfightCog(commands.Cog):
         await interaction.response.defer()
         await self._handle_bet(interaction, interaction.user, bet)
 
+    @is_admin_or_manager()
     @app_commands.command(name="cockstats", description="Show your cockfight streak & current win chance.")
     async def cockstats(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
