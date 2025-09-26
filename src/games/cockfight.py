@@ -101,7 +101,7 @@ class CockfightCog(BaseCog):
 
     def _compute_win_chance(self, streak: int) -> float:
         """Compute win chance based on streak."""
-        return BASE_WIN_PERCENT + (streak * 2.0)  # +2% per streak
+        return BASE_WIN_PERCENT + (streak * 1.0)  # +1% per streak
 
     @is_admin_or_manager()
     @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
