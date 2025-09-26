@@ -472,18 +472,28 @@ class CurrencySystem(BaseCog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Get settings and calculate potential earnings as percentage of target's total balance
+        # Get settings and calculate new probability and steal amount
         settings = await self.get_guild_settings(guild_id)
-        target_total = target_balance.cash + target_balance.bank
-        min_earnings = int(target_total * settings.rob_min_percent)
-        max_earnings = int(target_total * settings.rob_max_percent)
-        # Ensure we don't rob more than target has in cash
-        max_rob = min(target_balance.cash, max_earnings)
-        # Ensure minimum earnings of 1 if target has no money
-        potential_earnings = max(1, random.randint(min_earnings, max_rob))
         
-        # Check for success
-        success = random.random() <= settings.rob_success_rate
+        # Get robber's balance for networth calculation
+        robber_balance = await self.get_user_balance(user_id, guild_id)
+        robber_networth = robber_balance.cash + robber_balance.bank
+        target_networth = target_balance.cash + target_balance.bank
+        
+        # Calculate success probability: robber_networth / (target_networth + robber_networth)
+        if target_networth + robber_networth == 0:
+            success_probability = 0.5  # Default to 50% if both have 0 networth
+        else:
+            success_probability = robber_networth / (target_networth + robber_networth)
+        
+        # Calculate steal amount: success_probability * target's cash
+        potential_earnings = int(success_probability * target_balance.cash)
+        
+        # Ensure minimum earnings of 1 if calculated amount is 0
+        potential_earnings = max(1, potential_earnings)
+        
+        # Check for success using the new probability
+        success = random.random() <= success_probability
         
         # Update rob stats
         await self.db.update_user_balance(
@@ -555,7 +565,7 @@ class CurrencySystem(BaseCog):
             
             embed = discord.Embed(
                 title="🚨 Rob Failed!",
-                description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)} ({penalty_percentage:.1%} of your total balance)!",
+                description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)} ({penalty_percentage:.1%} of your total balance)!\n\n**Success Rate:** {success_probability:.1%}",
                 color=discord.Color.red()
             )
         

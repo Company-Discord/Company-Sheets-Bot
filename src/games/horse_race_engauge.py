@@ -13,6 +13,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from src.bot.base_cog import BaseCog
+from src.utils.utils import is_admin_or_manager
 
 load_dotenv()
 # ================= Currency =================
