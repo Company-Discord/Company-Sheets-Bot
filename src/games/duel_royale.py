@@ -7,9 +7,11 @@ import time
 import discord
 from discord.ext import commands
 from discord import app_commands
-from src.api.unbelievaboat_api import Client, quick_get_balance, quick_get_leaderboard
 from dotenv import load_dotenv
-from src.utils.utils import check_user_balances, send_insufficient_funds_message, initialize_unb_client, close_unb_client, get_unb_client
+
+# Import unified database and base cog
+from src.bot.base_cog import BaseCog
+from src.utils.utils import is_admin_or_manager
 
 load_dotenv()
 # ========= Tunables =========
@@ -148,9 +150,9 @@ def fmt_hp(name: str, val: int) -> str:
     return f"{name}: **{val}**" + (" ☠️" if val <= 0 else "")
 
 # ========= Cog =========
-class DuelRoyale(commands.Cog):
+class DuelRoyale(BaseCog):
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
+        super().__init__(bot)
         # Active users in a live duel/royale
         self.active_players: set[int] = set()
         # Pending /duelbet: target_id -> {'challenger': int, 'message_id': int, 'expires': float}
@@ -166,14 +168,9 @@ class DuelRoyale(commands.Cog):
         self.pending_bets: dict[int, dict] = {}
         
     async def cog_load(self):
-        """Initialize the UnbelievaBoat client when cog loads."""
-        is_dev = os.getenv("IS_DEV") == "True"
-        initialize_unb_client(is_dev)
-        print("✅ UnbelievaBoat client initialized")
-        
-    async def cog_unload(self):
-        """Clean up the UnbelievaBoat client when cog unloads."""
-        await close_unb_client()
+        """Initialize the unified database when cog loads."""
+        await super().cog_load()
+        print("✅ Unified database initialized for DuelRoyale")
 
     # ----- core fight runner -----
     async def _run_duel(self, interaction: discord.Interaction, p1: discord.Member, p2: discord.Member, bet_amount: int = 0):
@@ -182,12 +179,15 @@ class DuelRoyale(commands.Cog):
         followup = interaction.followup
         if bet_amount > 0:
             try:
-                all_sufficient, balances, insufficient_users = await check_user_balances(
-                    interaction.guild_id, [p1.id, p2.id], bet_amount
-                )
-                if not all_sufficient:
-                    await send_insufficient_funds_message(followup, insufficient_users, bet_amount, balances)
-                    await followup.send(f"❌ Duel cancelled due to insufficient balance(s).")
+                # Check both players have sufficient balance
+                p1_balance = await self.get_user_balance(p1.id, interaction.guild_id)
+                p2_balance = await self.get_user_balance(p2.id, interaction.guild_id)
+                
+                if p1_balance.cash < bet_amount:
+                    await followup.send(f"❌ {p1.display_name} doesn't have enough cash for this duel.")
+                    return
+                if p2_balance.cash < bet_amount:
+                    await followup.send(f"❌ {p2.display_name} doesn't have enough cash for this duel.")
                     return
             except Exception as e:
                 error_msg = f"Error checking balances: {e}"
@@ -298,19 +298,19 @@ class DuelRoyale(commands.Cog):
             bool: True if transfer successful, False otherwise
         """
         try:
-            unb_client = get_unb_client()
-                
             if not silent and followup:
                 await followup.send(f"Initiating Cash transfer from <@{loser_id}> to <@{winner_id}> in the amount of {bet_amount}")
             
-            # Update balances: subtract from loser, add to winner
-            await unb_client.update_user_balance(guild_id, loser_id, cash=-bet_amount, reason="Duel loss")
-            await unb_client.update_user_balance(guild_id, winner_id, cash=bet_amount, reason="Duel win")
+            # Use unified database transfer method
+            success = await self.transfer_money(loser_id, winner_id, guild_id, bet_amount, "Duel transfer")
             
             if not silent and followup:
-                await followup.send(f"Cash transfer complete")
+                if success:
+                    await followup.send(f"Cash transfer complete")
+                else:
+                    await followup.send(f"❌ Transfer failed")
             
-            return True
+            return success
                 
         except Exception as e:
             error_msg = f"Error transferring balance: {e}"
@@ -327,6 +327,7 @@ class DuelRoyale(commands.Cog):
     # ----- Instant /duel -----
     @app_commands.command(name="duel", description="Start a 1v1 duel immediately.")
     @app_commands.describe(opponent="Who do you want to duel?")
+    @is_admin_or_manager()
     async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
         author = interaction.user
         bet_amount = 0  # Default to no bet for instant duels
@@ -392,6 +393,7 @@ class DuelRoyale(commands.Cog):
 
     @app_commands.command(name="duelbet", description="Challenge someone to a duel that requires their acceptance (with buttons).")
     @app_commands.describe(opponent="Who do you want to challenge? (user)", bet_amount="Amount you are betting (number)")
+    @is_admin_or_manager()
     async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, bet_amount: int):
         author = interaction.user
         if bet_amount <= 0:
@@ -426,6 +428,7 @@ class DuelRoyale(commands.Cog):
         player1="Optional player", player2="Optional player", player3="Optional player",
         player4="Optional player", player5="Optional player", player6="Optional player", player7="Optional player",
     )
+    @is_admin_or_manager()
     async def royale(
         self,
         interaction: discord.Interaction,

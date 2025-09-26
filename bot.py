@@ -1,4 +1,4 @@
-# bot.py
+# bot_unified.py
 import os
 import asyncio
 import discord
@@ -29,7 +29,7 @@ write_lock = asyncio.Lock()
 
 @bot.event
 async def setup_hook():
-    # --- Load cogs ---
+    # --- Load cogs with unified database ---
     try:
         await bot.load_extension("src.games.duel_royale")
         print("Loaded duel_royale cog ✅")
@@ -43,9 +43,8 @@ async def setup_hook():
         print(f"Failed loading fun: {e}")
 
     try:
-        if os.getenv("IS_DEV") != "True":
-            await bot.load_extension("src.games.horse_race_engauge")
-            print("Loaded horse_race_engauge cog ✅")
+        await bot.load_extension("src.games.horse_race_engauge")
+        print("Loaded horse_race_engauge cog ✅")
     except Exception as e:
         print(f"Failed loading horse_race_engauge: {e}")
 
@@ -83,6 +82,7 @@ async def setup_hook():
         print("Loaded currency_system cog ✅")
     except Exception as e:
         print(f"Failed loading currency_system: {e}")
+    
     # ---- Load Cockfight extension ----
     try:
         await bot.load_extension("src.games.cockfight")
@@ -166,5 +166,5 @@ async def test_currency(interaction: discord.Interaction):
 
 # ================= Run =================
 if __name__ == "__main__":
-    # Recommended Railway start: python -u bot.py
+    # Recommended Railway start: python -u bot_unified.py
     bot.run(DISCORD_BOT_TOKEN)

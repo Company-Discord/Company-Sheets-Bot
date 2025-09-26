@@ -44,38 +44,39 @@ class Engauge:
     async def credit(self, guild_id: int, user_id: int, amount: int):
         await self.adjust(guild_id, user_id, abs(int(amount)))
 
-class UnbelievaBoat:
-    """UnbelievaBoat cash updater (PATCH delta)."""
-    def __init__(self):
-        self.base = "https://unbelievaboat.com/api/v1"
-        self.token = os.getenv("UNBELIEVABOAT_TOKEN")
-        if not self.token:
-            raise RuntimeError("Set UNBELIEVABOAT_TOKEN")
+# COMMENTED OUT - Using unified database system instead of Unbelievaboat API
+# class UnbelievaBoat:
+#     """UnbelievaBoat cash updater (PATCH delta)."""
+#     def __init__(self):
+#         self.base = "https://unbelievaboat.com/api/v1"
+#         self.token = os.getenv("UNBELIEVABOAT_TOKEN")
+#         if not self.token:
+#             raise RuntimeError("Set UNBELIEVABOAT_TOKEN")
 
-    def _headers(self):
-        return {
-            "Authorization": self.token,   # raw token
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
+#     def _headers(self):
+#         return {
+#             "Authorization": self.token,   # raw token
+#             "Accept": "application/json",
+#             "Content-Type": "application/json",
+#         }
 
-    async def update_cash(self, guild_id: int, user_id: int, delta: int, reason: str):
-        url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
-        payload = {"cash": int(delta), "reason": reason}
-        async with aiohttp.ClientSession() as s:
-            async with s.patch(url, json=payload, headers=self._headers()) as r:
-                if r.status >= 400:
-                    try:
-                        data = await r.json()
-                        msg = str(data)
-                    except Exception:
-                        msg = await r.text()
-                    if "insufficient" in msg.lower():
-                        raise InsufficientFunds(msg)
-                    raise ProviderError(f"UNB HTTP {r.status}: {msg}")
+#     async def update_cash(self, guild_id: int, user_id: int, delta: int, reason: str):
+#         url = f"{self.base}/guilds/{int(guild_id)}/users/{int(user_id)}"
+#         payload = {"cash": int(delta), "reason": reason}
+#         async with aiohttp.ClientSession() as s:
+#             async with s.patch(url, json=payload, headers=self._headers()) as r:
+#                 if r.status >= 400:
+#                     try:
+#                         data = await r.json()
+#                         msg = str(data)
+#                     except Exception:
+#                         msg = await r.text()
+#                     if "insufficient" in msg.lower():
+#                         raise InsufficientFunds(msg)
+#                     raise ProviderError(f"UNB HTTP {r.status}: {msg}")
 
-    async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
-        await self.update_cash(guild_id, user_id, abs(int(amount)), reason)
+#     async def credit(self, guild_id: int, user_id: int, amount: int, reason: str):
+#         await self.update_cash(guild_id, user_id, abs(int(amount)), reason)
 
 # ============================ Modal ============================
 class BuyUnbModal(discord.ui.Modal, title="Buy TC"):
@@ -149,7 +150,7 @@ class Fun(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._eng = Engauge()
-        self._unb = UnbelievaBoat()
+        # self._unb = UnbelievaBoat()  # COMMENTED OUT - Using unified database system instead
         self._rate = UNB_PER_ENG
 
         # Optional: scope slash commands to a single guild to speed up registration

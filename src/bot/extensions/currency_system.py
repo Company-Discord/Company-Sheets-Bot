@@ -1,604 +1,27 @@
 """
-Custom Currency System for Discord Bot
-
-A comprehensive economy system with work, slut, crime, and rob commands.
-Based on UnbelievaBoat mechanics but implemented as a standalone system.
+Unified Currency System using centralized database.
 """
 
 import os
-import asyncio
-import aiosqlite
+import random
+import json
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+
 import discord
 from discord.ext import commands
 from discord import app_commands
-import random
-import time
-import json
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
-from dataclasses import dataclass
 import pytz
 
+from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
-from src.utils.utils import get_role_data
-# ================= Configuration =================
-CURRENCY_EMOJI = os.getenv("TC_EMOJI", "💰")
-DATABASE_PATH = "data/databases/currency.db"
 
-# Default economy settings
-DEFAULT_SETTINGS = {
-    "currency_symbol": CURRENCY_EMOJI,
-    "work_cooldown": 30,  # 30 seconds
-    "slut_cooldown": 90,  # 1 minute 30 seconds
-    "crime_cooldown": 180,  # 3 minutes
-    "rob_cooldown": 900,  # 15 minutes
-    "collect_cooldown": 86400,  # 24 hours (daily salary)
-    "work_min_percent": 0.01,  # 1% of total balance
-    "work_max_percent": 0.05,  # 5% of total balance
-    "slut_min_percent": 0.02,  # 2% of total balance
-    "slut_max_percent": 0.08,  # 8% of total balance
-    "slut_fail_chance": 0.3,  # 30% chance
-    "crime_min_percent": 0.03,  # 3% of total balance
-    "crime_max_percent": 0.12,  # 12% of total balance
-    "crime_success_rate": 0.4,  # 40% success
-    "rob_min_percent": 0.02,  # 2% of target's total balance
-    "rob_max_percent": 0.08,  # 8% of target's total balance
-    "rob_success_rate": 0.3,  # 30% success
-}
 
-# ================= Data Classes =================
-@dataclass
-class UserBalance:
-    user_id: int
-    guild_id: int
-    cash: int = 0
-    bank: int = 0
-    total_earned: int = 0
-    total_spent: int = 0
-    crimes_committed: int = 0
-    crimes_succeeded: int = 0
-    robs_attempted: int = 0
-    robs_succeeded: int = 0
-    last_work: Optional[datetime] = None
-    last_slut: Optional[datetime] = None
-    last_crime: Optional[datetime] = None
-    last_rob: Optional[datetime] = None
-    last_collect: Optional[datetime] = None
-
-@dataclass
-class Transaction:
-    id: int
-    user_id: int
-    guild_id: int
-    amount: int
-    transaction_type: str
-    target_user_id: Optional[int] = None
-    success: bool = True
-    reason: str = ""
-    created_at: datetime = None
-
-@dataclass
-class GuildSettings:
-    guild_id: int
-    currency_symbol: str = CURRENCY_EMOJI
-    work_cooldown: int = 30
-    slut_cooldown: int = 90
-    crime_cooldown: int = 180
-    rob_cooldown: int = 900
-    collect_cooldown: int = 86400  # 24 hours (daily salary)
-    work_min_percent: float = 0.01  # 1% of total balance
-    work_max_percent: float = 0.05  # 5% of total balance
-    slut_min_percent: float = 0.02  # 2% of total balance
-    slut_max_percent: float = 0.08  # 8% of total balance
-    slut_fail_chance: float = 0.3
-    crime_min_percent: float = 0.03  # 3% of total balance
-    crime_max_percent: float = 0.12  # 12% of total balance
-    crime_success_rate: float = 0.4
-    rob_min_percent: float = 0.02  # 2% of target's total balance
-    rob_max_percent: float = 0.08  # 8% of target's total balance
-    rob_success_rate: float = 0.3
-
-# ================= Database Manager =================
-class CurrencyDatabase:
-    def __init__(self, db_path: str = DATABASE_PATH):
-        self.db_path = db_path
-        self._lock = asyncio.Lock()
-        self._initialized = False
-    
-    async def init_database(self):
-        """Initialize the database with required tables."""
-        async with self._lock:
-            # Ensure data directory exists
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            
-            async with aiosqlite.connect(self.db_path) as db:
-                # User balances table
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS user_balances (
-                        user_id INTEGER,
-                        guild_id INTEGER,
-                        cash INTEGER DEFAULT 0,
-                        bank INTEGER DEFAULT 0,
-                        total_earned INTEGER DEFAULT 0,
-                        total_spent INTEGER DEFAULT 0,
-                        crimes_committed INTEGER DEFAULT 0,
-                        crimes_succeeded INTEGER DEFAULT 0,
-                        robs_attempted INTEGER DEFAULT 0,
-                        robs_succeeded INTEGER DEFAULT 0,
-                        last_work TIMESTAMP,
-                        last_slut TIMESTAMP,
-                        last_crime TIMESTAMP,
-                        last_rob TIMESTAMP,
-                        last_collect TIMESTAMP,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        PRIMARY KEY (user_id, guild_id)
-                    )
-                """)
-                
-                # Transactions table
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS transactions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER,
-                        guild_id INTEGER,
-                        amount INTEGER,
-                        transaction_type TEXT,
-                        target_user_id INTEGER,
-                        success BOOLEAN,
-                        reason TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Guild settings table
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS guild_settings (
-                        guild_id INTEGER PRIMARY KEY,
-                        currency_symbol TEXT DEFAULT '💰',
-                        work_cooldown INTEGER DEFAULT 30,
-                        slut_cooldown INTEGER DEFAULT 90,
-                        crime_cooldown INTEGER DEFAULT 180,
-                        rob_cooldown INTEGER DEFAULT 900,
-                        collect_cooldown INTEGER DEFAULT 86400,
-                        work_min_percent REAL DEFAULT 0.01,
-                        work_max_percent REAL DEFAULT 0.05,
-                        slut_min_percent REAL DEFAULT 0.02,
-                        slut_max_percent REAL DEFAULT 0.08,
-                        slut_fail_chance REAL DEFAULT 0.3,
-                        crime_min_percent REAL DEFAULT 0.03,
-                        crime_max_percent REAL DEFAULT 0.12,
-                        crime_success_rate REAL DEFAULT 0.4,
-                        rob_min_percent REAL DEFAULT 0.02,
-                        rob_max_percent REAL DEFAULT 0.08,
-                        rob_success_rate REAL DEFAULT 0.3,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Role salary table
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS role_salary (
-                        name TEXT PRIMARY KEY,
-                        role_id INTEGER NOT NULL,
-                        salary INTEGER NOT NULL
-                    )
-                """)
-
-                # Add collect_cooldown column to guild_settings if it doesn't exist
-                try:
-                    await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
-                except Exception:
-                    # Column might already exist, that's okay
-                    pass
-                
-                # Add last_collect column to user_balances if it doesn't exist
-                try:
-                    await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
-                except Exception:
-                    # Column might already exist, that's okay
-                    pass
-
-                await db.commit()
-                
-                # Check if migrations have already been run
-                migration_completed = await self.check_migration_status()
-                if not migration_completed:
-                    # Migrate existing guild settings to new default cooldowns
-                    await self.migrate_guild_settings()
-                    await self.migrate_role_salary()
-                    await self.mark_migration_complete()
-                else:
-                    print("ℹ️  Database migrations already completed, skipping...")
-                
-                self._initialized = True
-    
-    async def ensure_initialized(self):
-        """Ensure database is initialized before operations."""
-        if not self._initialized:
-            await self.init_database()
-    
-    async def migrate_role_salary(self):
-        """
-        Load role data using get_role_data() and insert/update into role_salary table.
-        Columns: name (role_name), role_id, salary
-        """
-        role_data = get_role_data()
-        if not isinstance(role_data, dict):
-            print("⚠️ ROLE_DATA is not a dict.")
-            return
-
-        async with aiosqlite.connect(self.db_path) as db:
-            for role_name, info in role_data.items():
-                role_id = info.get("id")
-                salary = info.get("salary")
-                if role_id is None or salary is None:
-                    print(f"⚠️ Skipping role '{role_name}' due to missing id or salary.")
-                    continue
-                await db.execute("""
-                    INSERT INTO role_salary (name, role_id, salary)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(name) DO UPDATE SET role_id=excluded.role_id, salary=excluded.salary
-                """, (role_name, role_id, salary))
-            await db.commit()
-        print("✅ Migrated role salary data from ROLE_DATA to role_salary table.")
-
-    async def migrate_guild_settings(self):
-        """Migrate existing guild settings to new percentage-based earnings."""
-        async with aiosqlite.connect(self.db_path) as db:
-            # First, add new percentage columns if they don't exist
-            try:
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN work_min_percent REAL DEFAULT 0.01")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN work_max_percent REAL DEFAULT 0.05")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN slut_min_percent REAL DEFAULT 0.02")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN slut_max_percent REAL DEFAULT 0.08")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN crime_min_percent REAL DEFAULT 0.03")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN crime_max_percent REAL DEFAULT 0.12")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN rob_min_percent REAL DEFAULT 0.02")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN rob_max_percent REAL DEFAULT 0.08")
-                await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
-                print("✅ Added new percentage columns to guild_settings table")
-            except Exception as e:
-                # Columns might already exist, that's okay
-                print(f"ℹ️  Percentage columns may already exist: {e}")
-            
-            # Add last_collect column to user_balances table if it doesn't exist
-            try:
-                await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
-                print("✅ Added last_collect column to user_balances table")
-            except Exception as e:
-                # Column might already exist, that's okay
-                print(f"ℹ️  last_collect column may already exist: {e}")
-            
-            # Only update guild settings that don't have the new percentage columns set
-            # This prevents overwriting existing custom settings on every restart
-            await db.execute("""
-                UPDATE guild_settings 
-                SET work_cooldown = ?, 
-                    slut_cooldown = ?, 
-                    crime_cooldown = ?,
-                    collect_cooldown = ?,
-                    work_min_percent = ?,
-                    work_max_percent = ?,
-                    slut_min_percent = ?,
-                    slut_max_percent = ?,
-                    crime_min_percent = ?,
-                    crime_max_percent = ?,
-                    rob_min_percent = ?,
-                    rob_max_percent = ?
-                WHERE work_min_percent IS NULL OR work_min_percent = 0.0
-            """, (
-                DEFAULT_SETTINGS["work_cooldown"],
-                DEFAULT_SETTINGS["slut_cooldown"],
-                DEFAULT_SETTINGS["crime_cooldown"],
-                DEFAULT_SETTINGS["collect_cooldown"],
-                DEFAULT_SETTINGS["work_min_percent"],
-                DEFAULT_SETTINGS["work_max_percent"],
-                DEFAULT_SETTINGS["slut_min_percent"],
-                DEFAULT_SETTINGS["slut_max_percent"],
-                DEFAULT_SETTINGS["crime_min_percent"],
-                DEFAULT_SETTINGS["crime_max_percent"],
-                DEFAULT_SETTINGS["rob_min_percent"],
-                DEFAULT_SETTINGS["rob_max_percent"]
-            ))
-            await db.commit()
-            print("✅ Migrated guild settings to new percentage-based earnings (only for uninitialized settings)")
-    
-    async def check_migration_status(self) -> bool:
-        """Check if migrations have already been completed."""
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                # Check if migration tracking table exists
-                async with db.execute("""
-                    SELECT name FROM sqlite_master 
-                    WHERE type='table' AND name='migration_status'
-                """) as cursor:
-                    table_exists = await cursor.fetchone() is not None
-                
-                if not table_exists:
-                    return False
-                
-                # Check if migration is marked as complete
-                async with db.execute("""
-                    SELECT completed FROM migration_status 
-                    WHERE migration_name = 'currency_system_v1'
-                """) as cursor:
-                    result = await cursor.fetchone()
-                    return result is not None and result[0] == 1
-                    
-            except Exception as e:
-                print(f"⚠️  Error checking migration status: {e}")
-                return False
-    
-    async def mark_migration_complete(self):
-        """Mark migrations as completed."""
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                # Create migration tracking table if it doesn't exist
-                await db.execute("""
-                    CREATE TABLE IF NOT EXISTS migration_status (
-                        migration_name TEXT PRIMARY KEY,
-                        completed BOOLEAN DEFAULT 0,
-                        completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Mark this migration as complete
-                await db.execute("""
-                    INSERT OR REPLACE INTO migration_status (migration_name, completed, completed_at)
-                    VALUES ('currency_system_v1', 1, CURRENT_TIMESTAMP)
-                """)
-                
-                await db.commit()
-                print("✅ Marked currency system migration as complete")
-                
-            except Exception as e:
-                print(f"⚠️  Error marking migration complete: {e}")
-    
-    async def migrate_collect_cooldown(self):
-        """Ensure collect_cooldown column exists in guild_settings table."""
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                # Check if collect_cooldown column exists
-                async with db.execute("PRAGMA table_info(guild_settings)") as cursor:
-                    columns = [row[1] for row in await cursor.fetchall()]
-                    if "collect_cooldown" not in columns:
-                        await db.execute("ALTER TABLE guild_settings ADD COLUMN collect_cooldown INTEGER DEFAULT 86400")
-                        await db.commit()
-                        print("✅ Added collect_cooldown column to guild_settings table")
-                    else:
-                        print("ℹ️  collect_cooldown column already exists")
-            except Exception as e:
-                print(f"⚠️  Error checking/adding collect_cooldown column: {e}")
-    
-    async def migrate_last_collect(self):
-        """Ensure last_collect column exists in user_balances table."""
-        async with aiosqlite.connect(self.db_path) as db:
-            try:
-                # Check if last_collect column exists
-                async with db.execute("PRAGMA table_info(user_balances)") as cursor:
-                    columns = [row[1] for row in await cursor.fetchall()]
-                    if "last_collect" not in columns:
-                        await db.execute("ALTER TABLE user_balances ADD COLUMN last_collect TIMESTAMP")
-                        await db.commit()
-                        print("✅ Added last_collect column to user_balances table")
-                    else:
-                        print("ℹ️  last_collect column already exists")
-            except Exception as e:
-                print(f"⚠️  Error checking/adding last_collect column: {e}")
-    
-    async def get_user_balance(self, user_id: int, guild_id: int) -> UserBalance:
-        """Get user's balance information."""
-        await self.ensure_initialized()
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM user_balances 
-                WHERE user_id = ? AND guild_id = ?
-            """, (user_id, guild_id)) as cursor:
-                row = await cursor.fetchone()
-                
-                if row:
-                    return UserBalance(
-                        user_id=row["user_id"],
-                        guild_id=row["guild_id"],
-                        cash=row["cash"],
-                        bank=row["bank"],
-                        total_earned=row["total_earned"],
-                        total_spent=row["total_spent"],
-                        crimes_committed=row["crimes_committed"],
-                        crimes_succeeded=row["crimes_succeeded"],
-                        robs_attempted=row["robs_attempted"],
-                        robs_succeeded=row["robs_succeeded"],
-                        last_work=datetime.fromisoformat(row["last_work"]) if row["last_work"] else None,
-                        last_slut=datetime.fromisoformat(row["last_slut"]) if row["last_slut"] else None,
-                        last_crime=datetime.fromisoformat(row["last_crime"]) if row["last_crime"] else None,
-                        last_rob=datetime.fromisoformat(row["last_rob"]) if row["last_rob"] else None,
-                        last_collect=datetime.fromisoformat(row["last_collect"]) if row["last_collect"] else None
-                    )
-                else:
-                    # Create new user record
-                    await self.create_user(user_id, guild_id)
-                    return UserBalance(user_id=user_id, guild_id=guild_id)
-    
-    async def create_user(self, user_id: int, guild_id: int):
-        """Create a new user record."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT OR IGNORE INTO user_balances (user_id, guild_id)
-                VALUES (?, ?)
-            """, (user_id, guild_id))
-            await db.commit()
-    
-    async def update_user_balance(self, user_id: int, guild_id: int, 
-                                cash_delta: int = 0, bank_delta: int = 0,
-                                total_earned_delta: int = 0, total_spent_delta: int = 0,
-                                crimes_committed_delta: int = 0, crimes_succeeded_delta: int = 0,
-                                robs_attempted_delta: int = 0, robs_succeeded_delta: int = 0,
-                                last_work: Optional[datetime] = None,
-                                last_slut: Optional[datetime] = None,
-                                last_crime: Optional[datetime] = None,
-                                last_rob: Optional[datetime] = None,
-                                last_collect: Optional[datetime] = None):
-        """Update user's balance and stats."""
-        await self.ensure_initialized()
-        async with aiosqlite.connect(self.db_path) as db:
-            # Ensure user exists
-            await self.create_user(user_id, guild_id)
-            
-            # Build update query dynamically
-            updates = []
-            params = []
-            
-            if cash_delta != 0:
-                updates.append("cash = cash + ?")
-                params.append(cash_delta)
-            
-            if bank_delta != 0:
-                updates.append("bank = bank + ?")
-                params.append(bank_delta)
-            
-            if total_earned_delta != 0:
-                updates.append("total_earned = total_earned + ?")
-                params.append(total_earned_delta)
-            
-            if total_spent_delta != 0:
-                updates.append("total_spent = total_spent + ?")
-                params.append(total_spent_delta)
-            
-            if crimes_committed_delta != 0:
-                updates.append("crimes_committed = crimes_committed + ?")
-                params.append(crimes_committed_delta)
-            
-            if crimes_succeeded_delta != 0:
-                updates.append("crimes_succeeded = crimes_succeeded + ?")
-                params.append(crimes_succeeded_delta)
-            
-            if robs_attempted_delta != 0:
-                updates.append("robs_attempted = robs_attempted + ?")
-                params.append(robs_attempted_delta)
-            
-            if robs_succeeded_delta != 0:
-                updates.append("robs_succeeded = robs_succeeded + ?")
-                params.append(robs_succeeded_delta)
-            
-            if last_work:
-                updates.append("last_work = ?")
-                params.append(last_work.isoformat())
-            
-            if last_slut:
-                updates.append("last_slut = ?")
-                params.append(last_slut.isoformat())
-            
-            if last_crime:
-                updates.append("last_crime = ?")
-                params.append(last_crime.isoformat())
-            
-            if last_rob:
-                updates.append("last_rob = ?")
-                params.append(last_rob.isoformat())
-            
-            if last_collect:
-                updates.append("last_collect = ?")
-                params.append(last_collect.isoformat())
-            
-            if updates:
-                updates.append("updated_at = CURRENT_TIMESTAMP")
-                query = f"UPDATE user_balances SET {', '.join(updates)} WHERE user_id = ? AND guild_id = ?"
-                params.extend([user_id, guild_id])
-                
-                await db.execute(query, params)
-                await db.commit()
-    
-    async def log_transaction(self, user_id: int, guild_id: int, amount: int,
-                            transaction_type: str, target_user_id: Optional[int] = None,
-                            success: bool = True, reason: str = ""):
-        """Log a transaction."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT INTO transactions 
-                (user_id, guild_id, amount, transaction_type, target_user_id, success, reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (user_id, guild_id, amount, transaction_type, target_user_id, success, reason))
-            await db.commit()
-    
-    async def get_guild_settings(self, guild_id: int) -> GuildSettings:
-        """Get guild economy settings."""
-        await self.ensure_initialized()
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM guild_settings WHERE guild_id = ?
-            """, (guild_id,)) as cursor:
-                row = await cursor.fetchone()
-                
-                if row:
-                    return GuildSettings(
-                        guild_id=row["guild_id"],
-                        currency_symbol=row["currency_symbol"],
-                        work_cooldown=row["work_cooldown"],
-                        slut_cooldown=row["slut_cooldown"],
-                        crime_cooldown=row["crime_cooldown"],
-                        rob_cooldown=row["rob_cooldown"],
-                        collect_cooldown=row["collect_cooldown"],
-                        work_min_percent=row["work_min_percent"],
-                        work_max_percent=row["work_max_percent"],
-                        slut_min_percent=row["slut_min_percent"],
-                        slut_max_percent=row["slut_max_percent"],
-                        slut_fail_chance=row["slut_fail_chance"],
-                        crime_min_percent=row["crime_min_percent"],
-                        crime_max_percent=row["crime_max_percent"],
-                        crime_success_rate=row["crime_success_rate"],
-                        rob_min_percent=row["rob_min_percent"],
-                        rob_max_percent=row["rob_max_percent"],
-                        rob_success_rate=row["rob_success_rate"]
-                    )
-                else:
-                    # Create default settings
-                    await self.create_guild_settings(guild_id)
-                    return GuildSettings(guild_id=guild_id)
-    
-    async def create_guild_settings(self, guild_id: int):
-        """Create default guild settings."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("""
-                INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)
-            """, (guild_id,))
-            await db.commit()
-    
-    async def get_leaderboard(self, guild_id: int, limit: int = 10, offset: int = 0) -> List[Tuple[int, int, int, int]]:
-        """Get leaderboard (user_id, cash, bank, total)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT user_id, cash, bank, (cash + bank) as total
-                FROM user_balances 
-                WHERE guild_id = ?
-                ORDER BY total DESC
-                LIMIT ? OFFSET ?
-            """, (guild_id, limit, offset)) as cursor:
-                return await cursor.fetchall()
-    
-    async def get_user_rank(self, user_id: int, guild_id: int) -> int:
-        """Get user's rank in the leaderboard."""
-        async with aiosqlite.connect(self.db_path) as db:
-            async with db.execute("""
-                SELECT COUNT(*) + 1 as rank
-                FROM user_balances 
-                WHERE guild_id = ? AND (cash + bank) > (
-                    SELECT (cash + bank) FROM user_balances 
-                    WHERE user_id = ? AND guild_id = ?
-                )
-            """, (guild_id, user_id, guild_id)) as cursor:
-                row = await cursor.fetchone()
-                return row[0] if row else 1
-
-# ================= Main Cog =================
-class CurrencySystem(commands.Cog):
+class CurrencySystem(BaseCog):
     """Custom currency system with work, slut, crime, and rob commands."""
     
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.db = CurrencyDatabase()
+        super().__init__(bot)
         self.work_quips = self.load_work_quips()
         self.slut_quips = self.load_slut_quips()
         self.crime_quips = self.load_crime_quips()
@@ -659,7 +82,7 @@ class CurrencySystem(commands.Cog):
     
     async def cog_load(self):
         """Initialize database when cog loads."""
-        await self.db.init_database()
+        await super().cog_load()
         print("✅ Currency system database initialized")
         
         # Optional: scope slash commands to a single guild for faster registration
@@ -669,77 +92,46 @@ class CurrencySystem(commands.Cog):
             for cmd in self.__cog_app_commands__:
                 cmd.guild = guild_obj
     
-    def format_currency(self, amount: int, symbol: str = CURRENCY_EMOJI) -> str:
-        """Format currency amount with symbol."""
-        return f"{symbol} {amount:,}"
-    
-    def format_time_remaining(self, seconds: int) -> str:
-        """Format time remaining in human readable format."""
-        if seconds < 60:
-            return f"{seconds} seconds"
-        elif seconds < 3600:
-            minutes = seconds // 60
-            return f"{minutes} minute{'s' if minutes != 1 else ''}"
-        else:
-            hours = seconds // 3600
-            minutes = (seconds % 3600) // 60
-            if minutes == 0:
-                return f"{hours} hour{'s' if hours != 1 else ''}"
-            else:
-                return f"{hours}h {minutes}m"
-    
     def get_next_reset_time(self) -> datetime:
         """Get the next 11AM EST reset time."""
-        # Get EST timezone
-        est = pytz.timezone('US/Eastern')
+        est = pytz.timezone('America/New_York')
         now_est = datetime.now(est)
         
-        # Calculate next 11AM EST
         next_reset = now_est.replace(hour=11, minute=0, second=0, microsecond=0)
         if now_est >= next_reset:
-            # If it's already past 11AM today, next reset is tomorrow
             next_reset += timedelta(days=1)
         
-        # Ensure the result is timezone-aware
         return next_reset
     
     async def has_collected_today(self, user_id: int, guild_id: int) -> bool:
         """Check if user has already collected salary today (since last 11AM EST reset)."""
-        # Get EST timezone
-        est = pytz.timezone('US/Eastern')
+        est = pytz.timezone('America/New_York')
         now_est = datetime.now(est)
         
-        # Calculate today's reset time (11AM EST)
         today_reset = now_est.replace(hour=11, minute=0, second=0, microsecond=0)
-        
-        # If it's before 11AM today, check against yesterday's reset
         if now_est < today_reset:
             today_reset -= timedelta(days=1)
         
-        # Get user's last collect time
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
         
         if user_balance.last_collect is None:
             return False
         
-        # Handle timezone conversion properly
         if user_balance.last_collect.tzinfo is None:
-            # If last_collect is naive, assume it's UTC and convert to EST
             last_collect_utc = pytz.UTC.localize(user_balance.last_collect)
             last_collect_est = last_collect_utc.astimezone(est)
         else:
-            # If last_collect already has timezone info, convert to EST
             last_collect_est = user_balance.last_collect.astimezone(est)
         
-        # Check if last collect was after today's reset
         return last_collect_est >= today_reset
     
     async def check_cooldown(self, user_id: int, guild_id: int, command: str) -> Tuple[bool, int]:
         """Check if user is on cooldown for a command. Returns (can_use, seconds_remaining)."""
-        user = await self.db.get_user_balance(user_id, guild_id)
-        settings = await self.db.get_guild_settings(guild_id)
+        user = await self.get_user_balance(user_id, guild_id)
+        settings = await self.get_guild_settings(guild_id)
         
-        now = datetime.now()
+        est = pytz.timezone('America/New_York')
+        now = datetime.now(est)
         last_used = None
         cooldown_seconds = 0
         
@@ -761,6 +153,13 @@ class CurrencySystem(commands.Cog):
         
         if last_used is None:
             return True, 0
+        
+        # Ensure both datetimes are timezone-aware for comparison
+        if last_used.tzinfo is None:
+            last_used = last_used.replace(tzinfo=est)
+        else:
+            # Convert to EST if it's in a different timezone
+            last_used = last_used.astimezone(est)
         
         time_passed = (now - last_used).total_seconds()
         if time_passed >= cooldown_seconds:
@@ -792,24 +191,30 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get user balance and settings, then calculate earnings as percentage of total balance
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
-        settings = await self.db.get_guild_settings(guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
+        settings = await self.get_guild_settings(guild_id)
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.work_min_percent)
         max_earnings = int(total_balance * settings.work_max_percent)
-        # Ensure minimum earnings of 1 if user has no money
-        earnings = max(1, random.randint(min_earnings, max_earnings))
+        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
+        
+        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
+        if calculated_earnings < 100:
+            earnings = random.randint(100, 150)
+        else:
+            earnings = calculated_earnings
         
         # Update user balance
+        est = pytz.timezone('America/New_York')
         await self.db.update_user_balance(
             user_id, guild_id,
             cash_delta=earnings,
             total_earned_delta=earnings,
-            last_work=datetime.now()
+            last_work=datetime.now(est)
         )
         
         # Log transaction
-        await self.db.log_transaction(
+        await self.log_transaction(
             user_id, guild_id, earnings, "work", success=True,
             reason=f"Worked and earned {earnings}"
         )
@@ -851,13 +256,18 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get user balance and settings, then calculate potential earnings as percentage of total balance
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
-        settings = await self.db.get_guild_settings(guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
+        settings = await self.get_guild_settings(guild_id)
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.slut_min_percent)
         max_earnings = int(total_balance * settings.slut_max_percent)
-        # Ensure minimum earnings of 1 if user has no money
-        potential_earnings = max(1, random.randint(min_earnings, max_earnings))
+        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
+        
+        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
+        if calculated_earnings < 100:
+            potential_earnings = random.randint(100, 150)
+        else:
+            potential_earnings = calculated_earnings
         
         # Check for failure
         success = random.random() > settings.slut_fail_chance
@@ -868,10 +278,10 @@ class CurrencySystem(commands.Cog):
                 user_id, guild_id,
                 cash_delta=potential_earnings,
                 total_earned_delta=potential_earnings,
-                last_slut=datetime.now()
+                last_slut=datetime.now(pytz.timezone('America/New_York'))
             )
             
-            await self.db.log_transaction(
+            await self.log_transaction(
                 user_id, guild_id, potential_earnings, "slut", success=True,
                 reason=f"Successful slut activity, earned {potential_earnings}"
             )
@@ -887,7 +297,7 @@ class CurrencySystem(commands.Cog):
         else:
             # Failure - lose money and get penalty
             penalty = int(potential_earnings * 0.25)  # Lose 25% of potential earnings
-            current_balance = await self.db.get_user_balance(user_id, guild_id)
+            current_balance = await self.get_user_balance(user_id, guild_id)
             actual_loss = min(penalty, current_balance.cash)  # Can't go below 0
             
             if actual_loss > 0:
@@ -895,10 +305,10 @@ class CurrencySystem(commands.Cog):
                     user_id, guild_id,
                     cash_delta=-actual_loss,
                     total_spent_delta=actual_loss,
-                    last_slut=datetime.now()
+                    last_slut=datetime.now(pytz.timezone('America/New_York'))
                 )
             
-            await self.db.log_transaction(
+            await self.log_transaction(
                 user_id, guild_id, -actual_loss, "slut", success=False,
                 reason=f"Failed slut activity, lost {actual_loss}"
             )
@@ -940,13 +350,18 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get user balance and settings, then calculate potential earnings as percentage of total balance
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
-        settings = await self.db.get_guild_settings(guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
+        settings = await self.get_guild_settings(guild_id)
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.crime_min_percent)
         max_earnings = int(total_balance * settings.crime_max_percent)
-        # Ensure minimum earnings of 1 if user has no money
-        potential_earnings = max(1, random.randint(min_earnings, max_earnings))
+        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
+        
+        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
+        if calculated_earnings < 100:
+            potential_earnings = random.randint(100, 150)
+        else:
+            potential_earnings = calculated_earnings
         
         # Check for success
         success = random.random() <= settings.crime_success_rate
@@ -956,7 +371,7 @@ class CurrencySystem(commands.Cog):
             user_id, guild_id,
             crimes_committed_delta=1,
             crimes_succeeded_delta=1 if success else 0,
-            last_crime=datetime.now()
+            last_crime=datetime.now(pytz.timezone('America/New_York'))
         )
         
         if success:
@@ -967,7 +382,7 @@ class CurrencySystem(commands.Cog):
                 total_earned_delta=potential_earnings
             )
             
-            await self.db.log_transaction(
+            await self.log_transaction(
                 user_id, guild_id, potential_earnings, "crime", success=True,
                 reason=f"Successful crime, earned {potential_earnings}"
             )
@@ -983,7 +398,7 @@ class CurrencySystem(commands.Cog):
         else:
             # Failure - lose money and get longer cooldown
             penalty = int(potential_earnings * 0.5)  # Lose 50% of potential earnings
-            current_balance = await self.db.get_user_balance(user_id, guild_id)
+            current_balance = await self.get_user_balance(user_id, guild_id)
             actual_loss = min(penalty, current_balance.cash)  # Can't go below 0
             
             if actual_loss > 0:
@@ -993,7 +408,7 @@ class CurrencySystem(commands.Cog):
                     total_spent_delta=actual_loss
                 )
             
-            await self.db.log_transaction(
+            await self.log_transaction(
                 user_id, guild_id, -actual_loss, "crime", success=False,
                 reason=f"Failed crime, lost {actual_loss}"
             )
@@ -1047,7 +462,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Check if target has enough money
-        target_balance = await self.db.get_user_balance(target_id, guild_id)
+        target_balance = await self.get_user_balance(target_id, guild_id)
         if target_balance.cash < 50:  # Minimum amount to rob
             embed = discord.Embed(
                 title="❌ Poor Target",
@@ -1058,7 +473,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get settings and calculate potential earnings as percentage of target's total balance
-        settings = await self.db.get_guild_settings(guild_id)
+        settings = await self.get_guild_settings(guild_id)
         target_total = target_balance.cash + target_balance.bank
         min_earnings = int(target_total * settings.rob_min_percent)
         max_earnings = int(target_total * settings.rob_max_percent)
@@ -1075,7 +490,7 @@ class CurrencySystem(commands.Cog):
             user_id, guild_id,
             robs_attempted_delta=1,
             robs_succeeded_delta=1 if success else 0,
-            last_rob=datetime.now()
+            last_rob=datetime.now(pytz.timezone('America/New_York'))
         )
         
         if success:
@@ -1091,11 +506,11 @@ class CurrencySystem(commands.Cog):
                 total_spent_delta=potential_earnings
             )
             
-            await self.db.log_transaction(
+            await self.log_transaction(
                 user_id, guild_id, potential_earnings, "rob", target_user_id=target_id,
                 success=True, reason=f"Successfully robbed {target.display_name} for {potential_earnings}"
             )
-            await self.db.log_transaction(
+            await self.log_transaction(
                 target_id, guild_id, -potential_earnings, "rob", target_user_id=user_id,
                 success=False, reason=f"Got robbed by {interaction.user.display_name} for {potential_earnings}"
             )
@@ -1106,26 +521,41 @@ class CurrencySystem(commands.Cog):
                 color=discord.Color.green()
             )
         else:
-            # Failure - lose money
-            penalty = int(potential_earnings * 0.25)  # Lose 25% of potential earnings
-            current_balance = await self.db.get_user_balance(user_id, guild_id)
-            actual_loss = min(penalty, current_balance.cash)  # Can't go below 0
+            # Failure - lose money (5-10% of total balance)
+            current_balance = await self.get_user_balance(user_id, guild_id)
+            total_balance = current_balance.cash + current_balance.bank
             
-            if actual_loss > 0:
+            # Calculate penalty as 5-10% of total balance
+            penalty_percentage = random.uniform(0.05, 0.10)  # 5-10%
+            penalty = int(total_balance * penalty_percentage)
+            
+            # Determine how to split the penalty between cash and bank
+            if current_balance.cash >= penalty:
+                # Take from cash first
+                cash_loss = penalty
+                bank_loss = 0
+            else:
+                # Take all cash and remainder from bank
+                cash_loss = current_balance.cash
+                bank_loss = penalty - current_balance.cash
+            
+            # Apply the penalty
+            if penalty > 0:
                 await self.db.update_user_balance(
                     user_id, guild_id,
-                    cash_delta=-actual_loss,
-                    total_spent_delta=actual_loss
+                    cash_delta=-cash_loss,
+                    bank_delta=-bank_loss,
+                    total_spent_delta=penalty
                 )
             
-            await self.db.log_transaction(
-                user_id, guild_id, -actual_loss, "rob", target_user_id=target_id,
-                success=False, reason=f"Failed to rob {target.display_name}, lost {actual_loss}"
+            await self.log_transaction(
+                user_id, guild_id, -penalty, "rob", target_user_id=target_id,
+                success=False, reason=f"Failed to rob {target.display_name}, lost {penalty} (penalty: {penalty_percentage:.1%} of total balance)"
             )
             
             embed = discord.Embed(
                 title="🚨 Rob Failed!",
-                description=f"You failed to rob {target.display_name} and lost {self.format_currency(actual_loss, settings.currency_symbol)}!",
+                description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)} ({penalty_percentage:.1%} of your total balance)!",
                 color=discord.Color.red()
             )
         
@@ -1149,7 +579,7 @@ class CurrencySystem(commands.Cog):
         if await self.has_collected_today(user_id, guild_id):
             # Calculate time until next reset (11AM EST tomorrow)
             next_reset = self.get_next_reset_time()
-            now_est = datetime.now(pytz.timezone('US/Eastern'))
+            now_est = datetime.now(pytz.timezone('America/New_York'))
             time_until_reset = (next_reset - now_est).total_seconds()
             
             embed = discord.Embed(
@@ -1171,10 +601,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get role salary data from database
-        async with aiosqlite.connect(self.db.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("SELECT name, role_id, salary FROM role_salary") as cursor:
-                role_salaries = {row["name"]: {"id": row["role_id"], "salary": row["salary"]} for row in await cursor.fetchall()}
+        role_salaries = await self.db.get_role_salaries()
         
         if not role_salaries:
             embed = discord.Embed(
@@ -1210,12 +637,12 @@ class CurrencySystem(commands.Cog):
             user_id, guild_id,
             bank_delta=total_salary,
             total_earned_delta=total_salary,
-            last_collect=datetime.now()
+            last_collect=datetime.now(pytz.timezone('America/New_York'))
         )
         
         # Log transaction
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, total_salary, "collect", success=True,
             reason=f"Salary deposited to bank from {len(salary_breakdown)} role(s)"
         )
@@ -1248,7 +675,7 @@ class CurrencySystem(commands.Cog):
         )
         
         await interaction.response.send_message(embed=embed)
-
+    
     # ================= Balance Command =================
     @economy.command(name="balance", description="Check your balance and stats")
     @is_admin_or_manager()
@@ -1260,8 +687,8 @@ class CurrencySystem(commands.Cog):
         guild_id = interaction.guild.id
         
         # Get user balance and settings
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
-        settings = await self.db.get_guild_settings(guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
+        settings = await self.get_guild_settings(guild_id)
         rank = await self.db.get_user_rank(user_id, guild_id)
         
         # Create embed
@@ -1301,7 +728,7 @@ class CurrencySystem(commands.Cog):
     async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
         """Show the server's leaderboard."""
         guild_id = interaction.guild.id
-        settings = await self.db.get_guild_settings(guild_id)
+        settings = await self.get_guild_settings(guild_id)
         
         # Validate page number
         if page < 1:
@@ -1375,7 +802,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Check if user has enough cash
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
         if user_balance.cash < amount:
             embed = discord.Embed(
                 title="❌ Insufficient Funds",
@@ -1398,12 +825,12 @@ class CurrencySystem(commands.Cog):
         )
         
         # Log transactions
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, -amount, "give", target_user_id=target_id,
             success=True, reason=f"Gave {amount} to {user.display_name}"
         )
-        await self.db.log_transaction(
+        await self.log_transaction(
             target_id, guild_id, amount, "give", target_user_id=user_id,
             success=True, reason=f"Received {amount} from {interaction.user.display_name}"
         )
@@ -1426,7 +853,7 @@ class CurrencySystem(commands.Cog):
         guild_id = interaction.guild.id
         
         # Get user balance
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
         
         # Parse amount
         if amount.lower() == "all":
@@ -1470,8 +897,8 @@ class CurrencySystem(commands.Cog):
         )
         
         # Log transaction
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, deposit_amount, "deposit", success=True,
             reason=f"Deposited {deposit_amount} to bank"
         )
@@ -1494,7 +921,7 @@ class CurrencySystem(commands.Cog):
         guild_id = interaction.guild.id
         
         # Get user balance
-        user_balance = await self.db.get_user_balance(user_id, guild_id)
+        user_balance = await self.get_user_balance(user_id, guild_id)
         
         # Parse amount
         if amount.lower() == "all":
@@ -1538,8 +965,8 @@ class CurrencySystem(commands.Cog):
         )
         
         # Log transaction
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, withdraw_amount, "withdraw", success=True,
             reason=f"Withdrew {withdraw_amount} from bank"
         )
@@ -1592,8 +1019,8 @@ class CurrencySystem(commands.Cog):
             await self.db.update_user_balance(user_id, guild_id, bank_delta=amount)
         
         # Log transaction
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, amount, "admin_add", success=True,
             reason=f"Admin {interaction.user.display_name} added {amount} to {location}"
         )
@@ -1636,7 +1063,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Check if user has enough money
-        user_balance = await self.db.get_user_balance(user.id, interaction.guild.id)
+        user_balance = await self.get_user_balance(user.id, interaction.guild.id)
         current_amount = user_balance.cash if location == "cash" else user_balance.bank
         
         if current_amount < amount:
@@ -1658,8 +1085,8 @@ class CurrencySystem(commands.Cog):
             await self.db.update_user_balance(user_id, guild_id, bank_delta=-amount)
         
         # Log transaction
-        settings = await self.db.get_guild_settings(guild_id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(guild_id)
+        await self.log_transaction(
             user_id, guild_id, -amount, "admin_remove", success=True,
             reason=f"Admin {interaction.user.display_name} removed {amount} from {location}"
         )
@@ -1688,7 +1115,7 @@ class CurrencySystem(commands.Cog):
             return
         
         # Get current balance
-        user_balance = await self.db.get_user_balance(user.id, interaction.guild.id)
+        user_balance = await self.get_user_balance(user.id, interaction.guild.id)
         
         # Reset balance
         await self.db.update_user_balance(
@@ -1698,8 +1125,8 @@ class CurrencySystem(commands.Cog):
         )
         
         # Log transaction
-        settings = await self.db.get_guild_settings(interaction.guild.id)
-        await self.db.log_transaction(
+        settings = await self.get_guild_settings(interaction.guild.id)
+        await self.log_transaction(
             user.id, interaction.guild.id, -(user_balance.cash + user_balance.bank), "admin_reset", success=True,
             reason=f"Admin {interaction.user.display_name} reset balance"
         )
@@ -1727,21 +1154,10 @@ class CurrencySystem(commands.Cog):
             return
         
         guild_id = interaction.guild.id
-        settings = await self.db.get_guild_settings(guild_id)
+        settings = await self.get_guild_settings(guild_id)
         
         # Get economy stats
-        async with aiosqlite.connect(self.db.db_path) as db:
-            # Total users
-            async with db.execute("SELECT COUNT(*) FROM user_balances WHERE guild_id = ?", (guild_id,)) as cursor:
-                total_users = (await cursor.fetchone())[0]
-            
-            # Total money in circulation
-            async with db.execute("SELECT SUM(cash + bank) FROM user_balances WHERE guild_id = ?", (guild_id,)) as cursor:
-                total_money = (await cursor.fetchone())[0] or 0
-            
-            # Total transactions
-            async with db.execute("SELECT COUNT(*) FROM transactions WHERE guild_id = ?", (guild_id,)) as cursor:
-                total_transactions = (await cursor.fetchone())[0]
+        stats = await self.get_database_stats()
         
         embed = discord.Embed(
             title="📊 Economy Statistics",
@@ -1751,17 +1167,17 @@ class CurrencySystem(commands.Cog):
         
         embed.add_field(
             name="👥 Total Users",
-            value=str(total_users),
+            value=str(stats.get('user_balances', 0)),
             inline=True
         )
         embed.add_field(
             name="💰 Total Money",
-            value=self.format_currency(total_money, settings.currency_symbol),
+            value=self.format_currency(stats.get('total_money', 0), settings.currency_symbol),
             inline=True
         )
         embed.add_field(
             name="📈 Total Transactions",
-            value=str(total_transactions),
+            value=str(stats.get('transactions', 0)),
             inline=True
         )
         
@@ -1775,6 +1191,61 @@ class CurrencySystem(commands.Cog):
         )
         
         await interaction.response.send_message(embed=embed)
+    
+    @admin.command(name="database-stats", description="View database statistics")
+    @is_admin_or_manager()
+    async def database_stats(self, interaction: discord.Interaction):
+        """View database statistics (admin only)."""
+        # Check permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="You need administrator permissions to use this command!",
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Get database stats
+        stats = await self.get_database_stats()
+        
+        embed = discord.Embed(
+            title="📊 Database Statistics",
+            description=f"Statistics for {interaction.guild.name}",
+            color=discord.Color.blue()
+        )
+        
+        # Add stats fields
+        embed.add_field(
+            name="👥 Users",
+            value=str(stats.get('user_balances', 0)),
+            inline=True
+        )
+        embed.add_field(
+            name="💰 Transactions",
+            value=str(stats.get('transactions', 0)),
+            inline=True
+        )
+        embed.add_field(
+            name="🎮 Games",
+            value=f"Poker: {stats.get('poker_sessions', 0)}\nCrash: {stats.get('crash_bets', 0)}\nDuels: {stats.get('duel_matches', 0)}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎯 Predictions",
+            value=f"Active: {stats.get('predictions', 0)}\nBets: {stats.get('prediction_bets', 0)}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🎲 Lottery",
+            value=f"Entries: {stats.get('lottery_entries', 0)}\nWinners: {stats.get('lottery_winners', 0)}",
+            inline=True
+        )
+        
+        await interaction.response.send_message(embed=embed)
+
 
 # ================= Setup Function =================
 async def setup(bot: commands.Bot):

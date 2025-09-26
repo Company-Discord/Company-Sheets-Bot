@@ -7,20 +7,13 @@ from typing import List, Tuple, Dict, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiosqlite
 
-# =================== Import External APIs ===================
-from src.utils.utils import (
-    get_unb_client, credit_user, debit_user, get_user_balance, is_admin_or_manager
-)
-from src.api.unbelievaboat_api import UnbelievaBoatError  
-
-class InsufficientFunds(UnbelievaBoatError):
-    pass
+# =================== Import Unified Database ===================
+from src.bot.base_cog import BaseCog
+from src.utils.utils import is_admin_or_manager
 
 # =================== Config ===================
 CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
-DB_PATH = os.getenv("POKER_DB_PATH", "data/databases/poker_stats.sqlite3")
 
 def fmt_tc(n: int) -> str:
     return f"{CURRENCY_EMOTE} {n:,}"
@@ -271,8 +264,8 @@ class PokerView(discord.ui.View):
         await interaction.response.edit_message(view=self, embed=self._showdown_embed())
         # record fold as a loss
         try:
-            await self.cog._update_stats(
-                guild_id=self.message.guild.id,  # type: ignore
+            await self.cog._update_poker_stats(
+                guild_id=self.message.guild.id,
                 user_id=self.state.user_id,
                 bet=self.state.bet,
                 outcome=-1
@@ -300,19 +293,19 @@ class PokerView(discord.ui.View):
 
         try:
             if outcome > 0:
-                await credit_user(guild_id, user_id, bet * 2, reason="Poker-Lite win")
+                await self.cog.add_cash(user_id, guild_id, bet * 2, "Poker-Lite win")
                 self.result_text = f"**You win!** Payout {fmt_tc(bet * 2)}."
             elif outcome == 0:
-                await credit_user(guild_id, user_id, bet, reason="Poker-Lite push")
+                await self.cog.add_cash(user_id, guild_id, bet, "Poker-Lite push")
                 self.result_text = f"**Push.** Your bet {fmt_tc(bet)} is returned."
             else:
                 self.result_text = f"**Dealer wins.** You lose {fmt_tc(bet)}."
-        except UnbelievaBoatError as e:
+        except Exception as e:
             self.result_text = f"⚠️ Payout error: {e}"
 
         # Record stats
         try:
-            await self.cog._update_stats(
+            await self.cog._update_poker_stats(
                 guild_id=guild_id, user_id=user_id, bet=bet, outcome=outcome
             )
         except Exception:
@@ -351,66 +344,78 @@ class PokerView(discord.ui.View):
         return e
 
 # =================== Cog ===================
-class PokerLite(commands.Cog):
-    """Heads-up 5-card draw vs dealer using UnbelievaBoat balance, with stats & leaderboard."""
+class PokerLite(BaseCog):
+    """Heads-up 5-card draw vs dealer using unified database, with stats & leaderboard."""
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
+        super().__init__(bot)
         self.active_by_user: Dict[int, int] = {}   # per-user lock only
-        self.db: Optional[aiosqlite.Connection] = None
 
-    # ----- DB helpers -----
-    async def _ensure_db(self):
-        if self.db: return
-        self.db = await aiosqlite.connect(DB_PATH)
-        await self.db.execute("""
-            CREATE TABLE IF NOT EXISTS poker_stats (
-                guild_id INTEGER NOT NULL,
-                user_id  INTEGER NOT NULL,
-                hands    INTEGER NOT NULL DEFAULT 0,
-                wins     INTEGER NOT NULL DEFAULT 0,
-                losses   INTEGER NOT NULL DEFAULT 0,
-                pushes   INTEGER NOT NULL DEFAULT 0,
-                wagered  INTEGER NOT NULL DEFAULT 0,
-                net      INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id)
-            )
-        """)
-        await self.db.commit()
+    # ----- Poker Stats Methods -----
+    async def _get_poker_stats(self, guild_id: int, user_id: int) -> Dict:
+        """Get poker stats for a user."""
+        if not self.db:
+            raise RuntimeError("Database not initialized")
+        
+        async with self.db._pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT hands, wins, losses, pushes, wagered, net
+                FROM poker_stats
+                WHERE guild_id = $1 AND user_id = $2
+            """, guild_id, user_id)
+            
+            if row:
+                return {
+                    'hands': row['hands'],
+                    'wins': row['wins'],
+                    'losses': row['losses'],
+                    'pushes': row['pushes'],
+                    'wagered': row['wagered'],
+                    'net': row['net']
+                }
+            else:
+                return {
+                    'hands': 0,
+                    'wins': 0,
+                    'losses': 0,
+                    'pushes': 0,
+                    'wagered': 0,
+                    'net': 0
+                }
 
-    async def _update_stats(self, guild_id: int, user_id: int, bet: int, outcome: int):
+    async def _update_poker_stats(self, guild_id: int, user_id: int, bet: int, outcome: int):
         """
         outcome: 1=win, 0=push, -1=loss
         net change: +bet / 0 / -bet
         """
-        await self._ensure_db()
-        assert self.db is not None
-        await self.db.execute("""
-            INSERT INTO poker_stats (guild_id, user_id)
-            VALUES (?, ?)
-            ON CONFLICT(guild_id, user_id) DO NOTHING
-        """, (guild_id, user_id))
-        hands = 1
-        wins  = 1 if outcome > 0 else 0
-        losses= 1 if outcome < 0 else 0
-        pushes= 1 if outcome == 0 else 0
-        net   = bet if outcome > 0 else (-bet if outcome < 0 else 0)
-        wager = bet
-        await self.db.execute("""
-            UPDATE poker_stats
-               SET hands = hands + ?,
-                   wins = wins + ?,
-                   losses = losses + ?,
-                   pushes = pushes + ?,
-                   wagered = wagered + ?,
-                   net = net + ?
-             WHERE guild_id = ? AND user_id = ?
-        """, (hands, wins, losses, pushes, wager, net, guild_id, user_id))
-        await self.db.commit()
-
-    async def cog_unload(self):
-        if self.db:
-            await self.db.close()
-            self.db = None
+        if not self.db:
+            raise RuntimeError("Database not initialized")
+        
+        async with self.db._pool.acquire() as conn:
+            # Ensure user exists in poker_stats table
+            await conn.execute("""
+                INSERT INTO poker_stats (guild_id, user_id)
+                VALUES ($1, $2)
+                ON CONFLICT(guild_id, user_id) DO NOTHING
+            """, guild_id, user_id)
+            
+            # Update stats
+            hands = 1
+            wins = 1 if outcome > 0 else 0
+            losses = 1 if outcome < 0 else 0
+            pushes = 1 if outcome == 0 else 0
+            net = bet if outcome > 0 else (-bet if outcome < 0 else 0)
+            wager = bet
+            
+            await conn.execute("""
+                UPDATE poker_stats
+                SET hands = hands + $1,
+                    wins = wins + $2,
+                    losses = losses + $3,
+                    pushes = pushes + $4,
+                    wagered = wagered + $5,
+                    net = net + $6
+                WHERE guild_id = $7 AND user_id = $8
+            """, hands, wins, losses, pushes, wager, net, guild_id, user_id)
 
     # ----- per-user lock helpers -----
     def _locked(self, user_id: int) -> Optional[str]:
@@ -430,12 +435,10 @@ class PokerLite(commands.Cog):
         if interaction.guild_id is None:
             return await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
 
-        # Ensure currency client exists
-        try:
-            get_unb_client()
-        except Exception as e:
+        # Ensure database is initialized
+        if not self.db:
             return await interaction.response.send_message(
-                f"⚠️ Currency service not ready: {e}", ephemeral=True
+                "⚠️ Database not ready. Please try again.", ephemeral=True
             )
 
         user = interaction.user
@@ -454,18 +457,19 @@ class PokerLite(commands.Cog):
             )
 
         # Balance check
-        try:
-            balance = await get_user_balance(interaction.guild_id, user.id)
-            if balance < bet:
-                raise InsufficientFunds(f"Need {bet}, have {balance}")
-        except UnbelievaBoatError as e:
-            return await interaction.response.send_message(f"Balance check failed: {e}", ephemeral=True)
+        user_balance = await self.get_user_balance(user.id, interaction.guild_id)
+        if user_balance.cash < bet:
+            settings = await self.get_guild_settings(interaction.guild_id)
+            return await interaction.response.send_message(
+                f"You don't have enough cash! You have {self.format_currency(user_balance.cash, settings.currency_symbol)}.",
+                ephemeral=True
+            )
 
         # Escrow — debit bet
-        try:
-            await debit_user(interaction.guild_id, user.id, bet, reason="Poker-Lite bet escrow")
-        except UnbelievaBoatError as e:
-            return await interaction.response.send_message(f"Couldn’t place bet: {e}", ephemeral=True)
+        if not await self.deduct_cash(user.id, interaction.guild_id, bet, "Poker-Lite bet escrow"):
+            return await interaction.response.send_message(
+                "Failed to place bet. Please try again.", ephemeral=True
+            )
 
         # Start game
         deck = new_deck(); random.shuffle(deck)
@@ -504,22 +508,28 @@ class PokerLite(commands.Cog):
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
-        await self._ensure_db()
+        
+        if not self.db:
+            return await interaction.response.send_message(
+                "⚠️ Database not ready. Please try again.", ephemeral=True
+            )
+        
         uid = (user or interaction.user).id
-        row = None
-        assert self.db is not None
-        async with self.db.execute("""
-            SELECT hands, wins, losses, pushes, wagered, net
-              FROM poker_stats
-             WHERE guild_id = ? AND user_id = ?
-        """, (interaction.guild_id, uid)) as cur:
-            row = await cur.fetchone()
-        if not row:
+        stats = await self._get_poker_stats(interaction.guild_id, uid)
+        
+        if stats['hands'] == 0:
             return await interaction.response.send_message(
                 f"📝 No Poker-Lite history for {(user or interaction.user).mention} yet.",
                 ephemeral=True
             )
-        hands, wins, losses, pushes, wagered, net = row
+        
+        hands = stats['hands']
+        wins = stats['wins']
+        losses = stats['losses']
+        pushes = stats['pushes']
+        wagered = stats['wagered']
+        net = stats['net']
+        
         winrate = (wins / hands * 100) if hands else 0.0
         avg_bet = (wagered / hands) if hands else 0
         emb = discord.Embed(
@@ -552,24 +562,33 @@ class PokerLite(commands.Cog):
     ):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
-        await self._ensure_db()
+        
+        if not self.db:
+            return await interaction.response.send_message(
+                "⚠️ Database not ready. Please try again.", ephemeral=True
+            )
+        
         limit = max(1, min(int(limit or 10), 25))
         order_col = "net" if (not metric or metric.value == "net") else "wins"
-        assert self.db is not None
-        rows = []
-        async with self.db.execute(f"""
-            SELECT user_id, hands, wins, losses, pushes, wagered, net
-              FROM poker_stats
-             WHERE guild_id = ?
-             ORDER BY {order_col} DESC, wins DESC, hands DESC
-             LIMIT ?
-        """, (interaction.guild_id, limit)) as cur:
-            rows = await cur.fetchall()
+        
+        async with self.db._pool.acquire() as conn:
+            rows = await conn.fetch(f"""
+                SELECT user_id, hands, wins, losses, pushes, wagered, net
+                FROM poker_stats
+                WHERE guild_id = $1
+                ORDER BY {order_col} DESC, wins DESC, hands DESC
+                LIMIT $2
+            """, interaction.guild_id, limit)
+        
         if not rows:
             return await interaction.response.send_message("No Poker-Lite games have been recorded here yet.", ephemeral=True)
 
         lines = []
-        for idx, (uid, hands, wins, losses, pushes, wagered, net) in enumerate(rows, start=1):
+        for idx, row in enumerate(rows, start=1):
+            uid = row['user_id']
+            hands = row['hands']
+            wins = row['wins']
+            net = row['net']
             mention = f"<@{uid}>"
             if order_col == "net":
                 lines.append(f"**{idx}.** {mention} — Net {('+' if net>=0 else '')}{fmt_tc(net)} • Hands {hands}, Wins {wins}")

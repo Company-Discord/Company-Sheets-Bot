@@ -7,16 +7,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from src.bot.base_cog import BaseCog
+
 load_dotenv()
 # ================= Currency =================
 def cur() -> str:
-    v = (os.getenv("CURRENCY_EMOJI") or "").strip()
+    v = (os.getenv("TC_EMOJI") or "").strip()
     return v if v else "💰"
 
 def fmt(n: int) -> str:
@@ -30,14 +31,18 @@ class TxLog:
         self.path = os.getenv("TRANSACTION_LOG_PATH", "transactions.jsonl")
         ch = (os.getenv("RACE_LOG_CHANNEL_ID") or "").strip()
         self.log_channel_id: Optional[int] = int(ch) if ch.isdigit() else None
+        self.guild_id = int(os.getenv("DISCORD_GUILD_ID", "0"))
 
     async def write(self, kind: str, payload: dict):
+        # Log to JSONL file (for backward compatibility)
         event = {"ts": datetime.now(timezone.utc).isoformat(), "type": kind, **payload}
         try:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception:
             pass
+        
+        # Log to Discord channel if configured
         if self.log_channel_id:
             try:
                 ch = self.bot.get_channel(self.log_channel_id) or await self.bot.fetch_channel(self.log_channel_id)
@@ -52,103 +57,11 @@ class TxLog:
             except Exception:
                 pass
 
-# ================= Engauge client ===========
-class Engauge:
-    def __init__(self):
-        self.token = (os.getenv("ENGAUGE_TOKEN") or "").strip()
-        self.server_id = (os.getenv("ENGAUGE_SERVER_ID") or "").strip()
-        self.base = (os.getenv("ENGAUGE_API_BASE") or "https://engau.ge").rstrip("/")
-        if not self.token or not self.server_id:
-            raise RuntimeError("ENGAUGE_TOKEN and ENGAUGE_SERVER_ID must be set.")
-        self._session: Optional[aiohttp.ClientSession] = None
-
-    async def _s(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=12),
-                raise_for_status=False,
-            )
-        return self._session
-
-    def _member(self, uid: int) -> str:
-        return f"{self.base}/api/v1/servers/{self.server_id}/members/{uid}"
-
-    async def _json_or_text(self, r: aiohttp.ClientResponse):
-        ct = (r.headers.get("Content-Type") or "").lower()
-        if "application/json" in ct:
-            return await r.json()
-        return {"_text": await r.text()}
-
-    async def balance(self, uid: int) -> int:
-        s = await self._s()
-        async with s.get(self._member(uid)) as r:
-            if r.status == 404:
-                return 0
-            data = await self._json_or_text(r)
-            if r.status != 200:
-                msg = data.get("message") if isinstance(data, dict) else str(data)
-                raise RuntimeError(f"Engauge GET {r.status}: {msg}")
-            return int(data.get("currency", 0))
-
-    async def credit(self, uid: int, amount: int) -> int:
-        if amount < 0:
-            raise ValueError("credit amount must be >= 0")
-        s = await self._s()
-        url = f"{self._member(uid)}/currency"
-
-        # Try ?amount=X, then JSON, then form
-        for kwargs in ({"params": {"amount": str(amount)}},
-                       {"json": {"amount": amount}},
-                       {"data": {"amount": str(amount)}}):
-            async with s.post(url, **kwargs) as r:
-                data = await self._json_or_text(r)
-                if r.status == 200:
-                    return int(data.get("currency", 0))
-        msg = data.get("message") if isinstance(data, dict) else data.get("_text", "")
-        raise RuntimeError(f"Engauge credit {r.status}: {msg}")
-
-    async def debit(self, uid: int, amount: int) -> int:
-        if amount <= 0:
-            raise ValueError("debit amount must be > 0")
-        s = await self._s()
-        url = f"{self._member(uid)}/currency"
-
-        # Preferred: POST negative amount (Engauge should enforce rules)
-        for kwargs in ({"params": {"amount": str(-amount)}},
-                       {"json": {"amount": -amount}},
-                       {"data": {"amount": str(-amount)}}):
-            async with s.post(url, **kwargs) as r:
-                data = await self._json_or_text(r)
-                if r.status == 200:
-                    return int(data.get("currency", 0))
-                if r.status in (400, 409):
-                    msg = data.get("message") if isinstance(data, dict) else data.get("_text", "")
-                    raise RuntimeError(msg or f"Debit refused ({r.status})")
-
-        # Fallback: PATCH replace /currency
-        current = await self.balance(uid)
-        if current < amount:
-            raise RuntimeError(f"Insufficient funds: have {current}, need {amount}")
-        new_val = current - amount
-        body = [{"op": "replace", "path": "/currency", "value": new_val}]
-        headers = {"Content-Type": "application/json-patch+json"}
-        async with s.patch(self._member(uid), data=json.dumps(body), headers=headers) as r:
-            data = await self._json_or_text(r)
-            if r.status != 200:
-                msg = data.get("message") if isinstance(data, dict) else data.get("_text", "")
-                raise RuntimeError(f"Engauge debit PATCH {r.status}: {msg}")
-            return int(data.get("currency", 0))
-
-    async def close(self):
-        if self._session and not self._session.closed:
-            await self._session.close()
-
 # ================= Game state =============+
 HORSE_SETS = [
     ["Peppa Pig", "Piglet", "Ms. Piggy", "Porky Pig", "George Pig", "Charlotte"],
     ["Pumba", "Tom", "Jerry", "Bugs Bunny", "Daffy Duck", "Garfield"],
-    ["Tiger Woods", "Tigger", "Shere Khan", "Tiger Jackson", "Tony the Tiger", "Tigress"],
+    ["Tiger Woods", "Tigger", "Shere Khan", "Tiger Jackson", "Tony the Tiger", "Tigress", "Gaby"],
 ]
 
 TRACK_LEN = 28
@@ -205,7 +118,19 @@ class BetModal(discord.ui.Modal, title="Place Your Bet"):
         if self.race.max_bet and amt > self.race.max_bet:
             return await interaction.response.send_message(f"Maximum bet is {fmt(self.race.max_bet)}.", ephemeral=True)
         try:
-            bal_after = await self.cog.wallet.debit(interaction.user.id, amt)
+            # Check balance first
+            if not await self.cog.check_balance(interaction.user.id, interaction.guild_id, amt):
+                current_balance = await self.cog.get_user_balance(interaction.user.id, interaction.guild_id)
+                return await interaction.response.send_message(f"Insufficient funds: have {fmt(current_balance.cash)}, need {fmt(amt)}", ephemeral=True)
+            
+            # Deduct the amount
+            success = await self.cog.deduct_cash(interaction.user.id, interaction.guild_id, amt, "Horse race bet")
+            if not success:
+                current_balance = await self.cog.get_user_balance(interaction.user.id, interaction.guild_id)
+                return await interaction.response.send_message(f"Insufficient funds: have {fmt(current_balance.cash)}, need {fmt(amt)}", ephemeral=True)
+            
+            # Get new balance
+            bal_after = await self.cog.get_user_balance(interaction.user.id, interaction.guild_id)
         except Exception as e:
             return await interaction.response.send_message(f"Couldn't place bet: {e}", ephemeral=True)
 
@@ -257,28 +182,11 @@ class LobbyView(discord.ui.View):
         await self.cog.start_race(interaction)
 
 # ================= Cog =====================
-class HorseRace(commands.Cog):
+class HorseRace(BaseCog):
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.wallet = Engauge()            # keep eager – you already had it working
+        super().__init__(bot)
         self.tx = TxLog(bot)
         self.active: Dict[int, Race] = {}  # channel_id -> race
-        
-        # Set all commands in this cog to be guild-specific
-        guild_id = os.getenv("DISCORD_GUILD_ID")
-        print(f"[HorseRace] DISCORD_GUILD_ID from env: {guild_id}")
-        if guild_id:
-            print(f"[HorseRace] Setting guild-specific commands for {guild_id}")
-            guild_obj = discord.Object(id=int(guild_id))
-            print(f"[HorseRace] Available commands: {[cmd.name for cmd in self.__cog_app_commands__]}")
-            for command in self.__cog_app_commands__:
-                command.guild = guild_obj
-                print(f"[HorseRace] Assigned guild to command: {command.name}")
-            # Also assign guild to the wallet group
-            self.wallet.guild = guild_obj
-            print(f"[HorseRace] Assigned guild to wallet group")
-        else:
-            print(f"[HorseRace] No DISCORD_GUILD_ID set - commands will be global")
 
     # ---- UI helpers ----
     def _odds(self, r: Race) -> List[str]:
@@ -329,7 +237,8 @@ class HorseRace(commands.Cog):
         return "```\n" + "\n".join(lines) + "\n```"
 
     # ---- Commands ----
-    @app_commands.command(name="race", description="Start a horse race betting lobby (Engauge currency).")
+    @app_commands.command(name="race", description="Start a horse race betting lobby.")
+    @is_admin_or_manager()
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
         rake="House rake in basis points (500=5%).",
@@ -379,6 +288,7 @@ class HorseRace(commands.Cog):
 
     # Bet by NAME (with autocomplete)
     @app_commands.command(name="bet", description="Place a bet by horse NAME for the current race.")
+    @is_admin_or_manager()
     @app_commands.describe(horse="Horse name", amount="Bet amount")
     async def bet_cmd(self, interaction: discord.Interaction, horse: str, amount: int):
         r = self.active.get(interaction.channel_id or 0)
@@ -402,7 +312,19 @@ class HorseRace(commands.Cog):
                 f"Couldn't find **{horse}**. Options: {', '.join(r.horses)}", ephemeral=True)
 
         try:
-            bal_after = await self.wallet.debit(interaction.user.id, amount)
+            # Check balance first
+            if not await self.check_balance(interaction.user.id, interaction.guild_id, amount):
+                current_balance = await self.get_user_balance(interaction.user.id, interaction.guild_id)
+                return await interaction.response.send_message(f"Insufficient funds: have {fmt(current_balance.cash)}, need {fmt(amount)}", ephemeral=True)
+            
+            # Deduct the amount
+            success = await self.deduct_cash(interaction.user.id, interaction.guild_id, amount, "Horse race bet")
+            if not success:
+                current_balance = await self.get_user_balance(interaction.user.id, interaction.guild_id)
+                return await interaction.response.send_message(f"Insufficient funds: have {fmt(current_balance.cash)}, need {fmt(amount)}", ephemeral=True)
+            
+            # Get new balance
+            bal_after = await self.get_user_balance(interaction.user.id, interaction.guild_id)
         except Exception as e:
             return await interaction.response.send_message(f"Couldn't place bet: {e}", ephemeral=True)
 
@@ -432,17 +354,6 @@ class HorseRace(commands.Cog):
             scored.append((score, name))
         scored.sort()
         return [app_commands.Choice(name=n, value=n) for _, n in scored[:25]]
-
-    wallet = app_commands.Group(name="wallet", description="Engauge wallet")
-
-    @wallet.command(name="balance", description="Show your Engauge balance.")
-    async def wallet_balance(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        m = member or interaction.user
-        try:
-            b = await self.wallet.balance(m.id)
-            await interaction.response.send_message(f"**{m.display_name}** has **{fmt(b)}**.")
-        except Exception as e:
-            await interaction.response.send_message(f"Wallet error: {e}", ephemeral=True)
 
     # ---- Engine ----
     async def start_race(self, interaction: discord.Interaction):
@@ -504,11 +415,12 @@ class HorseRace(commands.Cog):
                     share = b.amount / win_pool
                     pay = math.floor(prize * share)
                     try:
-                        newb = await self.wallet.credit(b.user_id, pay)
+                        await self.add_cash(b.user_id, interaction.guild_id, pay, "Horse race winnings")
+                        new_balance = await self.get_user_balance(b.user_id, interaction.guild_id)
                         lines.append(f"• <@{b.user_id}> wins **{fmt(pay)}**")
                         await self.tx.write("payout", {"user_id": str(b.user_id), "username": b.username,
                                                        "horse_idx": b.horse, "horse_name": r.horses[b.horse],
-                                                       "amount": pay, "balance_after": newb,
+                                                       "amount": pay, "balance_after": new_balance.cash,
                                                        "pot": pot, "prize_pool": prize, "rake": rake,
                                                        "winning_horse": r.horses[win]})
                     except Exception as e:
@@ -519,11 +431,12 @@ class HorseRace(commands.Cog):
                 for b in r.bets:
                     refund = math.floor(refund_pool * (b.amount / pot)) if pot else 0
                     try:
-                        newb = await self.wallet.credit(b.user_id, refund)
+                        await self.add_cash(b.user_id, interaction.guild_id, refund, "Horse race refund")
+                        new_balance = await self.get_user_balance(b.user_id, interaction.guild_id)
                         lines.append(f"• <@{b.user_id}> refunded **{fmt(refund)}**")
                         await self.tx.write("refund", {"user_id": str(b.user_id), "username": b.username,
                                                        "horse_idx": b.horse, "horse_name": r.horses[b.horse],
-                                                       "amount": refund, "balance_after": newb,
+                                                       "amount": refund, "balance_after": new_balance.cash,
                                                        "pot": pot, "prize_pool": 0, "rake": rake,
                                                        "winning_horse": r.horses[win]})
                     except Exception as e:
@@ -545,12 +458,6 @@ class HorseRace(commands.Cog):
 
         self.active.pop(r.channel_id, None)
 
-    def cog_unload(self):
-        try:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self.wallet.close())
-        except Exception:
-            pass
 
 async def setup(bot: commands.Bot):
     cog = HorseRace(bot)  

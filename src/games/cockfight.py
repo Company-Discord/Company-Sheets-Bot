@@ -1,4 +1,7 @@
-# src/games/cockfight.py
+"""
+Unified Cockfight game using centralized database.
+"""
+
 import asyncio
 import random
 import time
@@ -8,99 +11,22 @@ from typing import Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiosqlite
 
-# Only import the permission helper
+from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
 
 BASE_WIN_PERCENT = 50.0         # base chance %
 PER_USER_LIMIT = 5              # max cockfights per rolling 60s (per user)
 PER_USER_WINDOW = 60.0          # seconds
 BUTTON_COOLDOWN_SECONDS = 2     # small pause after clicking "Bet Again"
-STREAKS_TABLE = "cockfight_streaks"
 
 
-class CockfightCog(commands.Cog):
-    """Cockfight betting that uses the custom CurrencySystem (admin/manager only)."""
+class CockfightCog(BaseCog):
+    """Cockfight betting that uses the unified database."""
 
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.econ = None  # will be set to the loaded CurrencySystem cog
+        super().__init__(bot)
         self._rate: dict[int, deque[float]] = {}
-
-    async def cog_load(self):
-        """
-        Grab the CurrencySystem cog and create the streaks table in the SAME DB file.
-        """
-        self.econ = self.bot.get_cog("CurrencySystem")
-        if not self.econ or not hasattr(self.econ, "db"):
-            raise RuntimeError(
-                "Cockfight requires the CurrencySystem cog to be loaded first "
-                "so it can reuse the same database and methods."
-            )
-
-        # Ensure the streaks table exists in the SAME SQLite database
-        async with aiosqlite.connect(self.econ.db.db_path) as db:
-            await db.execute(f"""
-                CREATE TABLE IF NOT EXISTS {STREAKS_TABLE} (
-                    user_id INTEGER,
-                    guild_id INTEGER,
-                    streak INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (user_id, guild_id)
-                )
-            """)
-            await db.commit()
-
-    # ------------------ streak helpers ------------------
-    async def _get_streak(self, user_id: int, guild_id: int) -> int:
-        async with aiosqlite.connect(self.econ.db.db_path) as db:
-            async with db.execute(
-                f"SELECT streak FROM {STREAKS_TABLE} WHERE user_id=? AND guild_id=?",
-                (user_id, guild_id),
-            ) as cur:
-                row = await cur.fetchone()
-                if row:
-                    return int(row[0])
-            await db.execute(
-                f"INSERT OR IGNORE INTO {STREAKS_TABLE}(user_id,guild_id,streak) VALUES (?,?,0)",
-                (user_id, guild_id),
-            )
-            await db.commit()
-        return 0
-
-    async def _set_streak(self, user_id: int, guild_id: int, streak: int):
-        async with aiosqlite.connect(self.econ.db.db_path) as db:
-            await db.execute(
-                f"""
-                INSERT INTO {STREAKS_TABLE}(user_id,guild_id,streak)
-                VALUES (?,?,?)
-                ON CONFLICT(user_id,guild_id) DO UPDATE SET streak=excluded.streak
-                """,
-                (user_id, guild_id, int(streak)),
-            )
-            await db.commit()
-
-    # ------------------ chance / roll ------------------
-    def _compute_win_chance(self, streak: int) -> float:
-        # base 50 + 1% per existing (pre-fight) consecutive win
-        return BASE_WIN_PERCENT + float(streak)
-
-    def _roll_win(self, win_percent: float) -> bool:
-        return random.random() < (win_percent / 100.0)
-
-    # ------------------ rate limiting ------------------
-    def _check_rate_limit(self, user_id: int) -> Optional[float]:
-        """
-        Rolling-window limiter: returns None if allowed, else seconds until allowed again.
-        """
-        now = time.monotonic()
-        dq = self._rate.setdefault(user_id, deque())
-        while dq and (now - dq[0]) > PER_USER_WINDOW:
-            dq.popleft()
-        if len(dq) >= PER_USER_LIMIT:
-            return PER_USER_WINDOW - (now - dq[0])
-        dq.append(now)
-        return None
 
     # ------------------ UI: Bet Again button ------------------
     class BetAgainView(discord.ui.View):
@@ -114,14 +40,17 @@ class CockfightCog(commands.Cog):
             # Only allow the same admin/manager who triggered the command
             if interaction.user.id != self.user_id:
                 await interaction.response.send_message(
-                    "This button isn’t for you.", ephemeral=True
+                    "This button isn't for you.", ephemeral=True
                 )
                 return False
-            if not await is_admin_or_manager().predicate(interaction):
-                await interaction.response.send_message(
-                    "You don’t have permission to use this.", ephemeral=True
-                )
-                return False
+            
+            # # Check if user has admin or manager permissions
+            # if not (interaction.user.guild_permissions.administrator or 
+            #         any(role.name.lower() in ['manager', 'moderator'] for role in interaction.user.roles)):
+            #     await interaction.response.send_message(
+            #         "You don't have permission to use this.", ephemeral=True
+            #     )
+            #     return False
             return True
 
         @discord.ui.button(label="Bet Again", style=discord.ButtonStyle.primary, custom_id="cockfight_bet_again")
@@ -131,107 +60,152 @@ class CockfightCog(commands.Cog):
             await interaction.response.edit_message(view=self)
 
             # rate limit check
-            wait = self.cog._check_rate_limit(self.user_id)
-            if wait is not None:
+            if not self.cog._check_rate_limit(self.user_id):
                 await interaction.followup.send(
-                    f"⏳ You’re going too fast. Try again in ~{int(wait)}s.", ephemeral=True
+                    f"⏳ You're going too fast. Max {PER_USER_LIMIT} cockfights per {PER_USER_WINDOW}s. Try again later.", 
+                    ephemeral=True
                 )
                 return
 
             await asyncio.sleep(BUTTON_COOLDOWN_SECONDS)
             await self.cog._handle_bet(interaction, interaction.user, self.bet, from_button=True)
 
-    # ------------------ slash commands (admin only) ------------------
+    async def cog_load(self):
+        """Initialize database when cog loads."""
+        await super().cog_load()
+        print("✅ Cockfight streaks table initialized in unified database")
+
+    def _rate_limit_key(self, user_id: int) -> str:
+        """Generate rate limit key for user."""
+        return f"cockfight:{user_id}"
+
+    def _check_rate_limit(self, user_id: int) -> bool:
+        """Check if user is within rate limits."""
+        now = time.time()
+        key = self._rate_limit_key(user_id)
+        
+        if key not in self._rate:
+            self._rate[key] = deque()
+        
+        # Remove old entries
+        while self._rate[key] and self._rate[key][0] <= now - PER_USER_WINDOW:
+            self._rate[key].popleft()
+        
+        # Check if under limit
+        if len(self._rate[key]) >= PER_USER_LIMIT:
+            return False
+        
+        # Add current timestamp
+        self._rate[key].append(now)
+        return True
+
+    def _compute_win_chance(self, streak: int) -> float:
+        """Compute win chance based on streak."""
+        return BASE_WIN_PERCENT + (streak * 2.0)  # +2% per streak
+
     @is_admin_or_manager()
     @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
     @app_commands.describe(bet="Amount to bet (positive integer, taken from your custom currency cash)")
     async def cockfight(self, interaction: discord.Interaction, bet: int):
-        # rate limit fast-path
-        wait = self._check_rate_limit(interaction.user.id)
-        if wait is not None:
+        """Cockfight betting command."""
+        user_id = interaction.user.id
+        guild_id = interaction.guild.id
+
+        # Rate limiting
+        if not self._check_rate_limit(user_id):
             await interaction.response.send_message(
-                f"⏳ You’re going too fast. Max {PER_USER_LIMIT}/min. Try again in ~{int(wait)}s.",
-                ephemeral=True,
+                f"⏰ Rate limit: max {PER_USER_LIMIT} cockfights per {PER_USER_WINDOW}s. Try again later.",
+                ephemeral=True
             )
             return
 
-        await interaction.response.defer()
         await self._handle_bet(interaction, interaction.user, bet)
 
     @is_admin_or_manager()
     @app_commands.command(name="cockstats", description="Show your cockfight streak & current win chance.")
     async def cockstats(self, interaction: discord.Interaction):
+        """Show cockfight statistics."""
         await interaction.response.defer(ephemeral=True)
         user_id = interaction.user.id
         guild_id = interaction.guild.id
-        streak = await self._get_streak(user_id, guild_id)
+        streak = await self.get_cockfight_streak(user_id, guild_id)
         chance = self._compute_win_chance(streak)
         await interaction.followup.send(
             f"Your streak: **{streak}**  •  Current win chance: **{chance:.2f}%**",
             ephemeral=True,
         )
 
-    # ------------------ core handler (uses custom currency DB) ------------------
-    async def _handle_bet(
-        self,
-        ctx_or_inter: discord.Interaction | commands.Context,
-        user: discord.Member,
-        amount: int,
-        from_button: bool = False,
-    ):
-        is_inter = isinstance(ctx_or_inter, discord.Interaction)
-        send = ctx_or_inter.followup.send if is_inter else ctx_or_inter.send
-
+    async def _handle_bet(self, interaction: discord.Interaction, user: discord.Member, amount: int, from_button: bool = False):
+        """Handle the betting logic."""
         user_id = int(user.id)
-        guild_id = int(ctx_or_inter.guild.id)
+        guild_id = int(interaction.guild.id)
+
+        # Defer response for initial command (not for button interactions)
+        if not from_button:
+            await interaction.response.defer()
 
         # Validate bet
-        try:
-            bet = int(amount)
-        except Exception:
-            return await send("Invalid bet amount. Use a whole number.", ephemeral=is_inter and not from_button)
-        if bet <= 0:
-            return await send("Bet must be greater than zero.", ephemeral=is_inter and not from_button)
+        if amount <= 0:
+            if from_button:
+                await interaction.followup.send(
+                    "Bet must be greater than zero.", 
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "Bet must be greater than zero.", 
+                    ephemeral=True
+                )
+            return
 
-        # === Use your custom currency system via CurrencySystem.db ===
-        # Check cash
-        user_balance = await self.econ.db.get_user_balance(user_id, guild_id)
-        if user_balance.cash < bet:
-            return await send(
-                f"You only have {user_balance.cash:,} — can't bet {bet:,}.",
-                ephemeral=is_inter and not from_button,
-            )
+        # Check balance
+        if not await self.check_balance(user_id, guild_id, amount):
+            user_balance = await self.get_user_balance(user_id, guild_id)
+            settings = await self.get_guild_settings(guild_id)
+            if from_button:
+                await interaction.followup.send(
+                    f"You don't have enough cash! You have {self.format_currency(user_balance.cash, settings.currency_symbol)}.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    f"You don't have enough cash! You have {self.format_currency(user_balance.cash, settings.currency_symbol)}.",
+                    ephemeral=True
+                )
+            return
 
-        # Deduct stake up-front (cash -bet; total_spent +bet) and log
-        await self.econ.db.update_user_balance(
-            user_id, guild_id,
-            cash_delta=-bet,
-            total_spent_delta=bet,
-        )
-        await self.econ.db.log_transaction(
-            user_id, guild_id, -bet, "cockfight_bet", success=True, reason=f"Placed cockfight bet {bet}"
-        )
+        # Deduct bet amount
+        if not await self.deduct_cash(user_id, guild_id, amount, "Cockfight bet"):
+            if from_button:
+                await interaction.followup.send(
+                    "Failed to place bet. Please try again.", 
+                    ephemeral=True
+                )
+            else:
+                await interaction.followup.send(
+                    "Failed to place bet. Please try again.", 
+                    ephemeral=True
+                )
+            return
 
-        # Roll using current streak
-        streak = await self._get_streak(user_id, guild_id)     # pre-fight streak
+        # Get streak and calculate win chance
+        streak = await self.get_cockfight_streak(user_id, guild_id)
         win_chance = self._compute_win_chance(streak)
-        won = self._roll_win(win_chance)
-
+        
+        # Determine outcome
+        won = random.random() < (win_chance / 100.0)
+        
+        # Update streak
+        await self.update_cockfight_streak(user_id, guild_id, won)
+        
         if won:
-            # Credit winnings equal to bet (net +bet) and log
-            await self.econ.db.update_user_balance(
-                user_id, guild_id,
-                cash_delta=bet,
-                total_earned_delta=bet,
-            )
-            await self.econ.db.log_transaction(
-                user_id, guild_id, bet, "cockfight_win", success=True, reason=f"Won cockfight, profit {bet}"
-            )
-
-            # Increase streak AFTER win
-            streak += 1
-            await self._set_streak(user_id, guild_id, streak)
-
+            # Win: double the bet
+            winnings = amount * 2
+            await self.add_cash(user_id, guild_id, winnings, "Cockfight win")
+            
+            settings = await self.get_guild_settings(guild_id)
+            
+            # Add funny win messages like in the original
             funny_win = random.choice([
                 "✅ Your chicken won the fight and made you richer! 🐓💰",
                 "✅ Cocky Balboa strikes again — victory is yours! 🐔🥊",
@@ -242,27 +216,31 @@ class CockfightCog(commands.Cog):
                 "🔥 Cockzilla has risen — flawless victory!",
                 "🎉 Your chicken pecked its way to glory!",
             ])
-
+            
             embed = discord.Embed(
                 title="🐔 Cockfight Results",
                 description=(
                     f"{funny_win}\n\n"
-                    f"**Won:** {bet * 2:,}\n"
-                    f"**Chicken strength:** {self._compute_win_chance(streak):.2f}%"
+                    f"**Won:** {winnings:,}\n"
+                    f"**Chicken strength:** {self._compute_win_chance(streak + 1):.2f}%"
                 ),
                 color=discord.Color.green(),
             )
-
-            view = self.BetAgainView(self, user_id, bet)
-            await send(embed=embed, view=view)
-
+            
+            # Add Bet Again button for wins
+            view = self.BetAgainView(self, user_id, amount)
+            
+            await interaction.followup.send(embed=embed, view=view)
         else:
-            # Loss → keep the earlier -bet transaction as the loss; reset streak
-            await self._set_streak(user_id, guild_id, 0)
-            await self.econ.db.log_transaction(
-                user_id, guild_id, -bet, "cockfight_loss", success=False, reason=f"Lost cockfight, lost {bet}"
+            # Loss: bet is already deducted
+            await self.log_transaction(
+                user_id, guild_id, -amount, "cockfight_loss", 
+                success=False, reason=f"Lost with {win_chance:.1f}% chance"
             )
-
+            
+            settings = await self.get_guild_settings(guild_id)
+            
+            # Add funny loss messages like in the original
             funny_loss = random.choice([
                 "❌ Your chicken lost the fight and died. 💀🐓",
                 "❌ The rooster got cooked… extra crispy. 🍗",
@@ -273,13 +251,14 @@ class CockfightCog(commands.Cog):
                 "🍗 Colonel Sanders sends his regards — extra crispy.",
                 "🪦 RIP Chicken. Gone but not forgotten (until dinner).",
             ])
-
+            
             embed = discord.Embed(
                 title="🐔 Cockfight Results",
-                description=f"{funny_loss}\n\n**Lost:** {bet:,}",
+                description=f"{funny_loss}\n\n**Lost:** {amount:,}",
                 color=discord.Color.red(),
             )
-            await send(embed=embed)
+            
+            await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):

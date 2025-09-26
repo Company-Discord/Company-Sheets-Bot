@@ -1,4 +1,4 @@
-# crash.py — UnbelievaBoat edition (in-memory, Cash Out button, Mixture risk)
+# crash.py — Unified database edition (in-memory, Cash Out button, Mixture risk)
 import os
 import math
 import random
@@ -12,14 +12,9 @@ from discord.ext import commands
 from discord import app_commands
 from discord.app_commands import CheckFailure
 
-# Import permissions and business utilities from utils.py
-from src.utils.utils import (
-    check_user_balances, is_admin_or_manager, MANAGER_ROLE_NAME,
-    credit_user, debit_user, get_user_balance, initialize_unb_client, close_unb_client
-)
-
-# Import UnbelievaBoat API for exceptions
-from src.api.unbelievaboat_api import UnbelievaBoatError, APIError, AuthenticationError, NotFoundError, RateLimitError
+# Import unified database and base cog
+from src.bot.base_cog import BaseCog
+from src.utils.utils import is_admin_or_manager
 
 # ============================ Config ============================
 
@@ -45,7 +40,7 @@ def draw_crash_multiplier() -> float:
 
 # ============================ Custom Exceptions ============================
 
-class InsufficientFunds(UnbelievaBoatError):
+class InsufficientFunds(Exception):
     """Raised when user doesn't have enough funds for a transaction."""
     pass
 
@@ -94,9 +89,9 @@ class CrashView(discord.ui.View):
 
         payout = int(math.floor(b.amount * rs.current_mult))
         try:
-            await credit_user(self.guild_id, inter.user.id, payout, "Crash cashout")
-        except UnbelievaBoatError as e:
-            return await inter.response.send_message(f"⚠️ UnbelievaBoat error: {e}", ephemeral=True)
+            await self.cog.add_cash(inter.user.id, self.guild_id, payout, "Crash cashout")
+        except Exception as e:
+            return await inter.response.send_message(f"⚠️ Payout error: {e}", ephemeral=True)
 
         b.cashed_out = True
         b.payout = payout
@@ -109,27 +104,22 @@ class CrashView(discord.ui.View):
 
 # ============================ Cog ============================
 
-class Crash(commands.Cog):
+class Crash(BaseCog):
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
+        super().__init__(bot)
         self.rounds: Dict[int, RoundState] = {}  # in-memory per-guild
     
     async def cog_load(self):
-        """Initialize the UnbelievaBoat client when cog loads."""
-        is_dev = os.getenv("IS_DEV") == "True"
-        initialize_unb_client(is_dev)
-        print("✅ UnbelievaBoat client initialized for Crash")
-    
-    async def cog_unload(self):
-        """Clean up when the cog is unloaded."""
-        await close_unb_client()
+        """Initialize the unified database when cog loads."""
+        await super().cog_load()
+        print("✅ Unified database initialized for Crash")
 
     # ---- Clear message for failed permission checks ----
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error):
         if isinstance(error, CheckFailure):
             try:
-                msg = f"❌ You must be an **Admin** or have the **{MANAGER_ROLE_NAME}** role to use this command."
+                msg = f"❌ You must be an **Admin** or **Manager** to use this command."
                 if interaction.response.is_done():
                     await interaction.followup.send(msg, ephemeral=True)
                 else:
@@ -256,10 +246,10 @@ class Crash(commands.Cog):
                 if not b.cashed_out and b.auto_cashout and rs.current_mult >= b.auto_cashout:
                     payout = int(math.floor(b.amount * rs.current_mult))
                     try:
-                        await credit_user(guild_id, uid, payout, "Crash auto-cashout")
+                        await self.add_cash(uid, guild_id, payout, "Crash auto-cashout")
                         b.cashed_out = True
                         b.payout = payout
-                    except UnbelievaBoatError as e:
+                    except Exception as e:
                         print("auto cashout credit error:", e)
 
             await self._refresh_embed(guild_id)
@@ -283,6 +273,7 @@ class Crash(commands.Cog):
     group = app_commands.Group(name="crash", description="Crash gambling game")
 
     @group.command(name="start", description="Start a crash round (opens betting)")
+    @is_admin_or_manager()
     @app_commands.describe(open_seconds="How long to accept bets before launch")
     async def start(self, inter: discord.Interaction, open_seconds: app_commands.Range[int, 5, 120] = 20):
         await inter.response.defer(ephemeral=True)
@@ -323,6 +314,7 @@ class Crash(commands.Cog):
         await inter.followup.send(f"Crash round opened for **{open_seconds}s**. Bets are live!", ephemeral=True)
 
     @group.command(name="bet", description="Place a bet (optionally set auto-cashout)")
+    @is_admin_or_manager()
     @app_commands.describe(
         amount="Amount of currency to bet (integer)",
         auto_cashout="Auto-cashout at this multiplier (e.g., 1.50). Leave empty to cash manually."
@@ -341,20 +333,17 @@ class Crash(commands.Cog):
         # single active bet (rebuy replaces: refund old → debit new)
         existing = rs.bets.get(inter.user.id)
         try:
-            check_sufficient_balance = await check_user_balances(inter.guild_id, [inter.user.id], amount)
-            print(check_sufficient_balance)
-            if not check_sufficient_balance[0]:
-                raise InsufficientFunds("You don't have enough currency for this bet.")
+            user_balance = await self.get_user_balance(inter.user.id, inter.guild_id)
+            if user_balance.cash < amount:
+                return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
+            
             if existing:
-                await credit_user(inter.guild_id, inter.user.id, existing.amount, "Crash bet replace refund")
-            await debit_user(inter.guild_id, inter.user.id, amount, "Crash bet stake")
-        except InsufficientFunds:
-            return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
-        except UnbelievaBoatError as e:
-            # The debit_user function already checks for insufficient funds
-            if "insufficient" in str(e).lower() or "not enough" in str(e).lower():
+                await self.add_cash(inter.user.id, inter.guild_id, existing.amount, "Crash bet replace refund")
+            
+            if not await self.deduct_cash(inter.user.id, inter.guild_id, amount, "Crash bet stake"):
                 return await inter.followup.send("❌ You don't have enough currency for this bet.", ephemeral=True)
-            return await inter.followup.send(f"⚠️ UnbelievaBoat error: {e}", ephemeral=True)
+        except Exception as e:
+            return await inter.followup.send(f"⚠️ Error processing bet: {e}", ephemeral=True)
 
         rs.bets[inter.user.id] = Bet(
             user_id=inter.user.id,
@@ -370,6 +359,7 @@ class Crash(commands.Cog):
         await self._refresh_embed(inter.guild_id)
 
     @group.command(name="cashout", description="Cash out your active bet (during flight)")
+    @is_admin_or_manager()
     async def cashout(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         rs = self._guild_round(inter.guild_id)
@@ -382,9 +372,9 @@ class Crash(commands.Cog):
 
         payout = int(math.floor(b.amount * rs.current_mult))
         try:
-            await credit_user(inter.guild_id, inter.user.id, payout, "Crash manual cashout")
-        except UnbelievaBoatError as e:
-            return await inter.followup.send(f"⚠️ UnbelievaBoat error while paying out: {e}", ephemeral=True)
+            await self.add_cash(inter.user.id, inter.guild_id, payout, "Crash manual cashout")
+        except Exception as e:
+            return await inter.followup.send(f"⚠️ Error while paying out: {e}", ephemeral=True)
 
         b.cashed_out = True
         b.payout = payout
@@ -406,8 +396,8 @@ class Crash(commands.Cog):
         for uid, b in list(rs.bets.items()):
             if not b.cashed_out and b.amount > 0:
                 try:
-                    await credit_user(inter.guild_id, uid, b.amount, "Crash round canceled refund")
-                except UnbelievaBoatError as e:
+                    await self.add_cash(uid, inter.guild_id, b.amount, "Crash round canceled refund")
+                except Exception as e:
                     print("refund error:", e)
 
         # reset state
@@ -419,6 +409,7 @@ class Crash(commands.Cog):
             await ch.send("❌ Crash round canceled — all active stakes refunded.")
 
     @group.command(name="status", description="Show current crash round status")
+    @is_admin_or_manager()
     async def status(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         rs = self._guild_round(inter.guild_id)
