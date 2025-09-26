@@ -1,6 +1,9 @@
 # poker_lite.py
 import os
 import random
+import time
+import math
+from collections import deque
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
 
@@ -17,6 +20,24 @@ CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
 
 def fmt_tc(n: int) -> str:
     return f"{CURRENCY_EMOTE} {n:,}"
+
+# ---------- card assets ----------
+RANK_CHAR_MAP = {"10": "T"}  # others already single-char like 2..9,J,Q,K,A
+SUIT_CHAR_MAP = {"♠": "S", "♥": "H", "♦": "D", "♣": "C"}
+
+CARD_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "cards"))
+
+def _rank_char(r: str) -> str:
+    return RANK_CHAR_MAP.get(r, r)
+
+def _suit_char(s: str) -> str:
+    return SUIT_CHAR_MAP[s]
+
+def _card_png(card: "Card") -> str:
+    return os.path.join(CARD_BASE, f"{_rank_char(card.rank)}{_suit_char(card.suit)}.png")
+
+def _back_png() -> str:
+    return os.path.join(CARD_BASE, "back.png")
 
 # =================== Cards / Deck ===================
 SUITS = ["♠", "♥", "♦", "♣"]
@@ -202,8 +223,8 @@ class DiscardSelect(discord.ui.Select):
         # Show actual card faces; keep 0–4 as values for internal use
         options = [
             discord.SelectOption(
-                label=str(cards[i]),           
-                value=str(i),                  
+                label=str(cards[i]),
+                value=str(i),
                 description=f"Discard card #{i+1}"
             )
             for i in range(5)
@@ -236,8 +257,11 @@ class PokerView(discord.ui.View):
 
     async def on_timeout(self):
         if not self.state.done:
-            try: await self.finish(None)
-            except: pass
+            try:
+                await self.finish(None)
+            except:
+                pass
+        self.stop()  # ensure view.wait() unblocks
 
     @discord.ui.button(label="Draw & Showdown", style=discord.ButtonStyle.primary)
     async def draw_button(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -261,7 +285,13 @@ class PokerView(discord.ui.View):
         self.outcome = -1
         self.clear_items()
         self.result_text = f"**You folded.** You lose {fmt_tc(self.state.bet)}."
-        await interaction.response.edit_message(view=self, embed=self._showdown_embed())
+        await interaction.response.edit_message(
+            view=self,
+            embed=self._showdown_embed(),
+            attachments=self.cog._files_showdown(self.state)
+        )
+        self.stop()  # stop the view so wait() returns
+
         # record fold as a loss
         try:
             await self.cog._update_poker_stats(
@@ -288,7 +318,7 @@ class PokerView(discord.ui.View):
 
         # Payouts (escrow: bet was already debited)
         bet = self.state.bet
-        guild_id = self.message.guild.id  # type: ignore
+        guild_id = self.message.guild.id  
         user_id = self.state.user_id
 
         try:
@@ -303,6 +333,22 @@ class PokerView(discord.ui.View):
         except Exception as e:
             self.result_text = f"⚠️ Payout error: {e}"
 
+        # --- Weekly Lottery: award tickets on net-positive winnings (Poker-Lite) ---
+        try:
+            if outcome > 0:
+                net_profit = int(bet)  # even-money win => profit == original bet
+                if net_profit > 0:
+                    self.cog.bot.dispatch(
+                        "gamble_winnings",
+                        guild_id,
+                        user_id,
+                        net_profit,
+                        "Poker-Lite",
+                    )
+        except Exception:
+            pass
+        # --- end weekly lottery block ---
+
         # Record stats
         try:
             await self.cog._update_poker_stats(
@@ -313,10 +359,19 @@ class PokerView(discord.ui.View):
 
         self.clear_items()
         if interaction and not interaction.response.is_done():
-            await interaction.response.edit_message(view=self, embed=self._showdown_embed())
+            await interaction.response.edit_message(
+                view=self,
+                embed=self._showdown_embed(),
+                attachments=self.cog._files_showdown(self.state)
+            )
         else:
             if self.message is not None:
-                await self.message.edit(view=self, embed=self._showdown_embed())
+                await self.message.edit(
+                    view=self,
+                    embed=self._showdown_embed(),
+                    attachments=self.cog._files_showdown(self.state)
+                )
+        self.stop()  # stop the view so wait() returns
 
     def _showdown_embed(self) -> discord.Embed:
         # Color by outcome: green win, red loss, gold push/fold
@@ -349,6 +404,56 @@ class PokerLite(BaseCog):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.active_by_user: Dict[int, int] = {}   # per-user lock only
+
+        # ---- Rate limit (3 games / 60s) ----
+        self._starts: Dict[int, deque[float]] = {}
+        self._MAX_PER = 3
+        self._WINDOW = 60.0
+
+    # ----- image helpers for sending attachments -----
+    def _files_draw_phase(self, state: "PokerState") -> List[discord.File]:
+        files: List[discord.File] = []
+        for i, c in enumerate(state.player):
+            files.append(discord.File(_card_png(c), filename=f"p{i}.png"))
+        back = _back_png()
+        for i in range(5):
+            files.append(discord.File(back, filename=f"d{i}.png"))
+        return files
+
+    def _files_showdown(self, state: "PokerState") -> List[discord.File]:
+        files: List[discord.File] = []
+        for i, c in enumerate(state.player):
+            files.append(discord.File(_card_png(c), filename=f"p{i}.png"))
+        for i, c in enumerate(state.dealer):
+            files.append(discord.File(_card_png(c), filename=f"d{i}.png"))
+        return files
+
+    # ----- rate limit helpers -----
+    def _rl_deque(self, user_id: int) -> deque:
+        dq = self._starts.get(user_id)
+        if dq is None:
+            dq = deque()
+            self._starts[user_id] = dq
+        return dq
+
+    def _rate_limit_check_and_mark(self, user_id: int) -> tuple[bool, int]:
+        """
+        Return (allowed, wait_seconds). If allowed, we also record this start time.
+        Limit: self._MAX_PER starts in the past self._WINDOW seconds (rolling).
+        """
+        now = time.time()
+        dq = self._rl_deque(user_id)
+
+        # evict old starts
+        while dq and now - dq[0] > self._WINDOW:
+            dq.popleft()
+
+        if len(dq) >= self._MAX_PER:
+            wait = int(math.ceil(self._WINDOW - (now - dq[0])))
+            return (False, max(wait, 1))
+
+        dq.append(now)   # record this start
+        return (True, 0)
 
     # ----- Poker Stats Methods -----
     async def _get_poker_stats(self, guild_id: int, user_id: int) -> Dict:
@@ -456,6 +561,15 @@ class PokerLite(BaseCog):
                 ephemeral=True
             )
 
+        # Rate limit: at most 3 games per rolling 60s
+        ok, wait_s = self._rate_limit_check_and_mark(interaction.user.id)
+        if not ok:
+            return await interaction.response.send_message(
+                f"⏳ Rate limit: you’ve started **{self._MAX_PER}** Poker-Lite games in the last minute. "
+                f"Try again in **{wait_s}s**.",
+                ephemeral=True
+            )
+
         # Balance check
         user_balance = await self.get_user_balance(user.id, interaction.guild_id)
         if user_balance.cash < bet:
@@ -492,7 +606,7 @@ class PokerLite(BaseCog):
         e.set_footer(text="You have 60s to act.")
 
         view = PokerView(state, self, timeout=60)
-        await interaction.response.send_message(embed=e, view=view)
+        await interaction.response.send_message(embed=e, view=view, files=self._files_draw_phase(state))
         sent = await interaction.original_response()
         self.active_by_user[user.id] = sent.id      # per-user lock only
         view.message = sent                          

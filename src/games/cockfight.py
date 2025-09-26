@@ -203,6 +203,22 @@ class CockfightCog(BaseCog):
             winnings = amount * 2
             await self.add_cash(user_id, guild_id, winnings, "Cockfight win")
             
+            # --- Weekly Lottery: award tickets on net-positive winnings (Cockfight) ---
+            try:
+                # Net profit = winnings - original bet  (here = amount)
+                net_profit = max(0, int(winnings) - int(amount))
+                if net_profit > 0:
+                    self.bot.dispatch(
+                        "gamble_winnings",
+                        guild_id,
+                        user_id,
+                        net_profit,
+                        "Cockfight",
+                    )
+            except Exception:
+                pass
+            # --- end weekly lottery block ---
+
             settings = await self.get_guild_settings(guild_id)
             
             # Add funny win messages like in the original

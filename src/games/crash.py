@@ -92,6 +92,13 @@ class CrashView(discord.ui.View):
             await self.cog.add_cash(inter.user.id, self.guild_id, payout, "Crash cashout")
         except Exception as e:
             return await inter.response.send_message(f"⚠️ Payout error: {e}", ephemeral=True)
+        # (weekly lottery dispatch)
+        net_profit = max(0, payout - b.amount)
+        try:
+            if net_profit > 0:
+                self.cog.bot.dispatch("gamble_winnings", self.guild_id, inter.user.id, net_profit, "Crash")
+        except Exception:
+            pass
 
         b.cashed_out = True
         b.payout = payout
@@ -249,6 +256,15 @@ class Crash(BaseCog):
                         await self.add_cash(uid, guild_id, payout, "Crash auto-cashout")
                         b.cashed_out = True
                         b.payout = payout
+                # (weekly lottery dispatch)
+                    net_profit = max(0, payout - b.amount)
+                        try:
+                            if net_profit > 0:
+                                self.bot.dispatch("gamble_winnings", guild_id, uid, net_profit, "Crash")
+                        except Exception:
+                            pass
+                # End of Lottery dispatch
+                
                     except Exception as e:
                         print("auto cashout credit error:", e)
 
@@ -375,7 +391,14 @@ class Crash(BaseCog):
             await self.add_cash(inter.user.id, inter.guild_id, payout, "Crash manual cashout")
         except Exception as e:
             return await inter.followup.send(f"⚠️ Error while paying out: {e}", ephemeral=True)
-
+        # (weekly lottery dispatch)
+        net_profit = max(0, payout - b.amount)
+        try:
+            if net_profit > 0:
+                self.bot.dispatch("gamble_winnings", inter.guild_id, inter.user.id, net_profit, "Crash")
+        except Exception:
+            pass
+        # End of Lottery Dispatch
         b.cashed_out = True
         b.payout = payout
         await inter.followup.send(

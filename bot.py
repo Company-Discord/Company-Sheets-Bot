@@ -89,6 +89,13 @@ async def setup_hook():
         print("Loaded cockfight cog ✅")
     except Exception as e:
         print(f"Failed loading cockfight: {e}")
+    
+    # ---- Load Blackjack extension ----
+    try:
+        await bot.load_extension("src.games.blackjack")
+        print("Loaded blackjack cog ♠️")
+    except Exception as e:
+        print(f"Failed loading blackjack: {e}")
 
 
 @bot.event
