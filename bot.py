@@ -1,12 +1,14 @@
 # bot_unified.py
 import os
 import asyncio
+import random
 import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
 from src.utils.utils import is_admin_or_manager
+from src.api.engauge_adapter import EngaugeAdapter
 
 # ================= Env & config ==================
 load_dotenv()
@@ -26,6 +28,41 @@ bot = commands.Bot(command_prefix="!", intents=intents)  # prefix unused for sla
 tree = bot.tree
 
 write_lock = asyncio.Lock()
+
+# ================= Crate Drop System =================
+async def random_crate_drop_task():
+    """
+    Background task that drops crates at random intervals between 65-180 minutes.
+    Crates are read from the ENGAUGE_CRATES environment variable.
+    """
+    server_id = int(os.getenv("DISCORD_GUILD_ID", 0))
+    if not server_id:
+        print("⚠️  DISCORD_GUILD_ID not set. Crate drops disabled.")
+        return
+    
+    try:
+        adapter = EngaugeAdapter(server_id)
+        print("🎁 Crate drop system initialized")
+    except Exception as e:
+        print(f"❌ Failed to initialize crate drop system: {e}")
+        return
+    
+    while True:
+        try:
+            # Wait for random interval between 65-180 minutes (3900-10800 seconds)
+            wait_time = random.randint(3900, 10800)
+            print(f"⏰ Next crate drop in {wait_time // 60} minutes ({wait_time} seconds)")
+            await asyncio.sleep(wait_time)
+            
+            # Drop a crate
+            print("🎁 Dropping random crate...")
+            result = await adapter.drop_crate()
+            print(f"✅ Crate dropped successfully: {result}")
+            
+        except Exception as e:
+            print(f"❌ Error in crate drop task: {e}")
+            # Wait 5 minutes before retrying on error
+            await asyncio.sleep(300)
 
 @bot.event
 async def setup_hook():
@@ -96,6 +133,13 @@ async def setup_hook():
         print("Loaded blackjack cog ♠️")
     except Exception as e:
         print(f"Failed loading blackjack: {e}")
+
+    # ---- Start Crate Drop Task ----
+    try:
+        asyncio.create_task(random_crate_drop_task())
+        print("Started random crate drop task ✅")
+    except Exception as e:
+        print(f"Failed to start crate drop task: {e}")
 
 
 @bot.event
