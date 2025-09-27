@@ -264,6 +264,12 @@ async def sync_commands(interaction: discord.Interaction):
             from src.bot.command_groups import tc
             bot.tree.add_command(tc, guild=guild)
 
+            for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
+                try:
+                    bot.tree.add_command(cmd, guild=guild)
+                except Exception as e:
+                    print(f"Failed to re-add {getattr(cmd, 'name', cmd)}: {e}")
+
             guild_synced = await tree.sync(guild=guild)
 
             guild_names = [cmd.name for cmd in guild_synced]
