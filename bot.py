@@ -252,6 +252,15 @@ async def sync_commands(interaction: discord.Interaction):
         if guild_id:
             guild = discord.Object(id=int(guild_id))
             guild_synced = await tree.sync(guild=guild)
+            guild = discord.Object(id=int(guild_id))
+
+            #hard reset the guild's command schema
+            bot.tree.clear_commands(guild=guild)
+            from src.bot.command_groups import tc
+            bot.tree.add_command(tc, guild=guild)
+
+            guild_synced = await tree.sync(guild=guild)
+
             guild_names = [cmd.name for cmd in guild_synced]
             print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
             guild_response = f"🏠 **Guild**: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`\n"
