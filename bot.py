@@ -195,16 +195,21 @@ async def on_ready():
             if guild_id:
                 guild = discord.Object(id=int(guild_id))
 
-                # Clear old guild commands to prevent signature mismatches
+                # Clear old guild commands
                 bot.tree.clear_commands(guild=guild)
 
-                # Re-add /tc so it's definitely present in the local tree before syncing
-                try:
-                    from src.bot.command_groups import tc
-                    bot.tree.add_command(tc, guild=guild)
-                except Exception as e:
-                    print(f"Re-adding /tc failed: {e}")
+                # Re-add /tc
+                from src.bot.command_groups import tc
+                bot.tree.add_command(tc, guild=guild)
 
+                # Re-add admin/debug commands
+                for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
+                    try:
+                        bot.tree.add_command(cmd, guild=guild)
+                    except Exception as e:
+                        print(f"Failed to re-add {getattr(cmd, 'name', cmd)}: {e}")
+
+                # Single sync after re-adding
                 guild_synced = await tree.sync(guild=guild)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
 
@@ -251,7 +256,7 @@ async def sync_commands(interaction: discord.Interaction):
         if reloaded:
             print(f"Reloaded extensions:\n- " + "\n- ".join(reloaded))
 
-        # Guild sync first (fast propagation for testing)
+        # Guild sync (hard reset > re-add > sync)
         guild_id = os.getenv("DISCORD_GUILD_ID")
         guild_response = ""
         if guild_id:
@@ -260,16 +265,18 @@ async def sync_commands(interaction: discord.Interaction):
             # hard reset the guild's command schema
             bot.tree.clear_commands(guild=guild)
 
+            # re-add /tc
             from src.bot.command_groups import tc
             bot.tree.add_command(tc, guild=guild)
 
-            # re-add admin/debug commands
+            # re-add admin/debug helpers so they exist after the clear
             for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
                 try:
                     bot.tree.add_command(cmd, guild=guild)
                 except Exception as e:
                     print(f"Failed to re-add {getattr(cmd, 'name', cmd)}: {e}")
 
+            # single sync after re-adding
             guild_synced = await tree.sync(guild=guild)
             guild_names = [cmd.name for cmd in guild_synced]
             print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
