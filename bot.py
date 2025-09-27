@@ -169,13 +169,13 @@ async def setup_hook():
         guild_id_env = os.getenv("DISCORD_GUILD_ID")
         guild_obj = discord.Object(id=int(guild_id_env)) if guild_id_env else None
         if guild_obj:
-            if not any(cmd.name == "tc" for cmd in bot.tree.get_commands(guild=guild_obj)):
-                bot.tree.add_command(tc, guild=guild_obj)
-                print(f"Registered /tc to guild {guild_id_env} on startup")
+            bot.tree.remove_command("tc", type=None, guild=guild_obj)
+            bot.tree.add_command(tc, guild=guild_obj)
+            print(f"Registered fresh /tc to guild {guild_id_env}")
         else:
-            if not any(cmd.name == "tc" for cmd in bot.tree.get_commands()):
-                bot.tree.add_command(tc)
-                print("Registered /tc globally on startup")
+            bot.tree.remove_command("tc")
+            bot.tree.add_command(tc)
+            print("Registered fresh /tc globally")
     except Exception as e:
         print(f"Startup /tc registration skipped: {e}")
 
@@ -194,15 +194,25 @@ async def on_ready():
             # Guild-specific sync first (fast propagation for testing)
             if guild_id:
                 guild = discord.Object(id=int(guild_id))
+
+                # Clear old guild commands to prevent signature mismatches
+                bot.tree.clear_commands(guild=guild)
+
+                # Re-add /tc so it's definitely present in the local tree before syncing
+                try:
+                    from src.bot.command_groups import tc
+                    bot.tree.add_command(tc, guild=guild)
+                except Exception as e:
+                    print(f"Re-adding /tc failed: {e}")
+
                 guild_synced = await tree.sync(guild=guild)
-                guild_names = [cmd.name for cmd in guild_synced]
-                print(f"Guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
+                print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
 
             # Global sync is opt-in to avoid rate limits on startup
-            if os.getenv("SYNC_GLOBAL_ON_STARTUP", "0") == "1":
-                global_synced = await tree.sync()
-                command_names = [cmd.name for cmd in global_synced]
-                print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
+        if os.getenv("SYNC_GLOBAL_ON_STARTUP", "0") == "1":
+            bot.tree.clear_commands(guild=None)
+            global_synced = await tree.sync()
+            print(f"Global sync → {len(global_synced)} commands")
 
             bot._did_initial_sync = True
 
