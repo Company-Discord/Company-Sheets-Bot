@@ -144,15 +144,22 @@ def render_hand(card_paths, out_path, *, show_all=True,
 #     return _unb_client
 
 
+MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Manager").lower()
+
 def is_admin_or_manager():
     async def predicate(inter: discord.Interaction) -> bool:
+        # guild-only
+        if not isinstance(inter.user, discord.Member):
+            return False
+
         # admins always allowed
         if inter.user.guild_permissions.administrator:
             return True
-        # allow by role name
-        if isinstance(inter.user, discord.Member):
-            if any(r.name == MANAGER_ROLE_NAME for r in inter.user.roles):
-                return True
+
+        # allow by role name (case-insensitive)
+        if any(r.name.lower() == MANAGER_ROLE_NAME for r in inter.user.roles):
+            return True
+
         return False
     return app_commands.check(predicate)
 
