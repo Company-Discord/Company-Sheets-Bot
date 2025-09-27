@@ -5,6 +5,7 @@ import json
 from typing import Dict, Any, Optional
 # from src.api.unbelievaboat_api import Client  # COMMENTED OUT - Using unified database system instead
 from dotenv import load_dotenv
+from PIL import Image, ImageOps
 
 load_dotenv()
 MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
@@ -66,6 +67,41 @@ def get_all_roles() -> Dict[str, Dict[str, int]]:
     """
     return get_role_data()
 
+
+def render_hand(card_paths, out_path, *, show_all=True,
+                angle_step=4, overlap_px=45, scale=0.5, back_path=None):
+    """
+    card_paths: list of file paths (e.g. ['src/assets/cards/JS.png', 'src/assets/cards/7C.png'])
+    show_all:   if False, only show first card + back (for dealer)
+    back_path:  path to back.png (used when show_all=False)
+    """
+    cards = [Image.open(p).convert("RGBA") for p in card_paths]
+    if scale != 1.0:
+        cards = [c.resize((int(c.width*scale), int(c.height*scale)), Image.LANCZOS) for c in cards]
+
+    if not show_all:
+        assert back_path, "back_path required when show_all=False"
+        cards = [cards[0], Image.open(back_path).convert("RGBA").resize(cards[0].size, Image.LANCZOS)]
+
+    # Fan the cards a little: negative to positive angles
+    n = len(cards)
+    angles = [int((i-(n-1)/2)*angle_step) for i in range(n)]
+    rotated = [c.rotate(angles[i], resample=Image.BICUBIC, expand=True) for i,c in enumerate(cards)]
+
+    # Compute canvas size with overlap
+    w = rotated[0].width + (n-1)*overlap_px + max(0, rotated[-1].width - cards[-1].width)
+    h = max(img.height for img in rotated)
+    canvas = Image.new("RGBA", (w, h), (0,0,0,0))
+
+    # Paste with slight vertical alignment to keep bottoms level-ish
+    x = 0
+    for img in rotated:
+        y = h - img.height  # align to bottom
+        canvas.alpha_composite(img, (x, y))
+        x += overlap_px
+
+    canvas.save(out_path)
+    return out_path
 # COMMENTED OUT - Using unified database system instead of Unbelievaboat API
 # # Global UnbelievaBoat client
 # _unb_client: Client = None

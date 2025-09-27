@@ -5,12 +5,17 @@ Base cog class with unified database functionality.
 import discord
 from discord.ext import commands
 from typing import Optional
-
+import os
 from src.database.database import Database
-
+# Ticket rules (earned from net profit events)
+WLOTTERY_EARN_PER_TICKET = int(os.getenv("WLOTTERY_EARN_PER_TICKET", "500000"))  # 1 ticket per 500k profit
+WLOTTERY_MAX_TICKETS_PER_USER = int(os.getenv("WLOTTERY_MAX_TIX", "5"))
 
 class BaseCog(commands.Cog):
     """Base cog class that provides shared unified database functionality."""
+    
+    # Global emoji cache shared across all instances
+    emoji_cache = {}
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -43,6 +48,37 @@ class BaseCog(commands.Cog):
                 return f"{hours} hour{'s' if hours != 1 else ''}"
             else:
                 return f"{hours}h {minutes}m"
+    
+    # ================= Emoji Cache Methods =================
+    
+    async def populate_emoji_cache(self):
+        """Populate the global emoji cache with all guild emojis"""
+        BaseCog.emoji_cache.clear()
+        
+        print(f"📱 Bot is connected to {len(self.bot.guilds)} guilds")
+        for guild in self.bot.guilds:
+            print(f"📱 Guild: {guild.name} has {len(guild.emojis)} emojis")
+            for emoji in guild.emojis:
+                # Store only name and ID for efficiency
+                BaseCog.emoji_cache[str(emoji.name)] = {
+                    'id': emoji.id,
+                    'name': emoji.name,
+                    'animated': emoji.animated
+                }
+        
+        print(f"📱 Loaded {len(BaseCog.emoji_cache)} emojis into cache")
+    
+    def get_cached_emoji(self, emoji_name: str):
+        """Get an emoji from the cache by name"""
+        cached_emoji = BaseCog.emoji_cache.get(emoji_name)
+        if cached_emoji:
+            # Return formatted emoji string
+            return f"<{'a' if cached_emoji['animated'] else ''}:{cached_emoji['name']}:{cached_emoji['id']}>"
+        return None
+    
+    async def refresh_emoji_cache(self):
+        """Refresh the emoji cache (useful when emojis are added/removed)"""
+        await self.populate_emoji_cache()
     
     # ================= Currency System Methods =================
     
@@ -184,3 +220,5 @@ class BaseCog(commands.Cog):
         if not self.db:
             raise RuntimeError("Database not initialized")
         await self.db.cleanup_old_data(days)
+
+        # -------------------- Ticket accrual (events) --------------------

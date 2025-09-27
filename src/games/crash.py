@@ -256,15 +256,14 @@ class Crash(BaseCog):
                         await self.add_cash(uid, guild_id, payout, "Crash auto-cashout")
                         b.cashed_out = True
                         b.payout = payout
-                # (weekly lottery dispatch)
-                    net_profit = max(0, payout - b.amount)
+                        # (weekly lottery dispatch)
+                        net_profit = max(0, payout - b.amount)
                         try:
                             if net_profit > 0:
                                 self.bot.dispatch("gamble_winnings", guild_id, uid, net_profit, "Crash")
                         except Exception:
                             pass
-                # End of Lottery dispatch
-                
+                        # End of Lottery dispatch
                     except Exception as e:
                         print("auto cashout credit error:", e)
 

@@ -172,7 +172,7 @@ class CurrencySystem(BaseCog):
     admin = app_commands.Group(name="admin", description="Admin commands for economy management", parent=economy)
     
     # ================= Work Command =================
-    @economy.command(name="work", description="Earn money through legitimate work")
+    @app_commands.command(name="work", description="Earn money through legitimate work")
     @is_admin_or_manager()
     async def work(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
@@ -200,7 +200,7 @@ class CurrencySystem(BaseCog):
         
         # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
         if calculated_earnings < 100:
-            earnings = random.randint(100, 150)
+            earnings = random.randint(200, 500)
         else:
             earnings = calculated_earnings
         
@@ -237,7 +237,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Slut Command =================
-    @economy.command(name="slut", description="High-risk earning activity with potential consequences")
+    @app_commands.command(name="slut", description="High-risk earning activity with potential consequences")
     @is_admin_or_manager()
     async def slut(self, interaction: discord.Interaction):
         """Slut command - high risk, high reward."""
@@ -263,9 +263,9 @@ class CurrencySystem(BaseCog):
         max_earnings = int(total_balance * settings.slut_max_percent)
         calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
         
-        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
-        if calculated_earnings < 100:
-            potential_earnings = random.randint(100, 150)
+        # Apply minimum reward: if calculated earnings < 750, award 750-5000 instead
+        if calculated_earnings < 750:
+            potential_earnings = random.randint(750, 5000)
         else:
             potential_earnings = calculated_earnings
         
@@ -331,7 +331,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Crime Command =================
-    @economy.command(name="crime", description="Criminal activities with success/failure mechanics")
+    @app_commands.command(name="crime", description="Criminal activities with success/failure mechanics")
     @is_admin_or_manager()
     async def crime(self, interaction: discord.Interaction):
         """Crime command - criminal activities with consequences."""
@@ -357,9 +357,9 @@ class CurrencySystem(BaseCog):
         max_earnings = int(total_balance * settings.crime_max_percent)
         calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
         
-        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
-        if calculated_earnings < 100:
-            potential_earnings = random.randint(100, 150)
+        # Apply minimum reward: if calculated earnings < 15000, award 15000-25000 instead
+        if calculated_earnings < 15000:
+            potential_earnings = random.randint(15000, 25000)
         else:
             potential_earnings = calculated_earnings
         
@@ -431,7 +431,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Rob Command =================
-    @economy.command(name="rob", description="Steal money from another user")
+    @app_commands.command(name="rob", description="Steal money from another user")
     @is_admin_or_manager()
     @app_commands.describe(target="The user you want to rob")
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
@@ -479,13 +479,14 @@ class CurrencySystem(BaseCog):
         robber_balance = await self.get_user_balance(user_id, guild_id)
         robber_networth = robber_balance.cash + robber_balance.bank
         target_networth = target_balance.cash + target_balance.bank
-        
         # Calculate success probability: robber_networth / (target_networth + robber_networth)
         if target_networth + robber_networth == 0:
-            success_probability = 0.5  # Default to 50% if both have 0 networth
+            success_probability = 0.2  # Default to 20% if both have 0 networth
         else:
-            success_probability = robber_networth / (target_networth + robber_networth)
-        
+            success_probability = 1 - (robber_networth / (target_networth + robber_networth))
+
+        success_probability = min(success_probability, 0.8)
+
         # Calculate steal amount: success_probability * target's cash
         potential_earnings = int(success_probability * target_balance.cash)
         
@@ -502,7 +503,12 @@ class CurrencySystem(BaseCog):
             robs_succeeded_delta=1 if success else 0,
             last_rob=datetime.now(pytz.timezone('America/New_York'))
         )
+
+        emoji = discord.utils.get(self.bot.emojis, name="ratJAM")
         
+
+        
+        await interaction.response.send_message(f"{emoji} <@{user_id}> attempted to rob <@{target_id}> with a success rate of {success_probability:.1%}", ephemeral=False)
         if success:
             # Success - transfer money
             await self.db.update_user_balance(
@@ -530,6 +536,7 @@ class CurrencySystem(BaseCog):
                 description=f"You successfully robbed {target.display_name} and got {self.format_currency(potential_earnings, settings.currency_symbol)}!",
                 color=discord.Color.green()
             )
+            embed.set_image(url=os.getenv("ROB_SUCCESS_GIF"))
         else:
             # Failure - lose money (5-10% of total balance)
             current_balance = await self.get_user_balance(user_id, guild_id)
@@ -568,6 +575,7 @@ class CurrencySystem(BaseCog):
                 description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)} ({penalty_percentage:.1%} of your total balance)!\n\n**Success Rate:** {success_probability:.1%}",
                 color=discord.Color.red()
             )
+            embed.set_image(url=os.getenv("ROB_FAILURE_GIF"))
         
         embed.add_field(
             name="Next Rob Available",
@@ -575,10 +583,10 @@ class CurrencySystem(BaseCog):
             inline=False
         )
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     
     # ================= Collect Command =================
-    @economy.command(name="collect", description="Collect salary from your roles")
+    @app_commands.command(name="collect", description="Collect salary from your roles")
     @is_admin_or_manager()
     async def collect(self, interaction: discord.Interaction):
         """Collect salary from user's roles."""
@@ -687,7 +695,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Balance Command =================
-    @economy.command(name="balance", description="Check your balance and stats")
+    @app_commands.command(name="balance", description="Check your balance and stats")
     @is_admin_or_manager()
     @app_commands.describe(user="Check another user's balance (optional)")
     async def balance(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -732,7 +740,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Leaderboard Command =================
-    @economy.command(name="leaderboard", description="View the server's money leaderboard")
+    @app_commands.command(name="leaderboard", description="View the server's money leaderboard")
     @is_admin_or_manager()
     @app_commands.describe(page="Page number to view (default: 1)")
     async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
@@ -782,7 +790,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Give Command =================
-    @economy.command(name="give", description="Give money to another user")
+    @app_commands.command(name="give", description="Give money to another user")
     @is_admin_or_manager()
     @app_commands.describe(user="The user to give money to", amount="Amount to give")
     async def give(self, interaction: discord.Interaction, user: discord.Member, amount: int):
@@ -854,7 +862,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Deposit Command =================
-    @economy.command(name="deposit", description="Move money from cash to bank")
+    @app_commands.command(name="deposit", description="Move money from cash to bank")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to deposit (or 'all' for all cash)")
     async def deposit(self, interaction: discord.Interaction, amount: str):
@@ -922,7 +930,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Withdraw Command =================
-    @economy.command(name="withdraw", description="Move money from bank to cash")
+    @app_commands.command(name="withdraw", description="Move money from bank to cash")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to withdraw (or 'all' for all bank)")
     async def withdraw(self, interaction: discord.Interaction, amount: str):

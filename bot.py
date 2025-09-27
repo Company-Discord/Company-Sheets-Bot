@@ -141,10 +141,32 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed to start crate drop task: {e}")
 
+      # ---- Load HighLow extension ----
+    try:
+        await bot.load_extension("src.games.highlow")
+        print("Loaded highlow cog 🔼🔽")
+    except Exception as e:
+        print(f"Failed loading highlow: {e}")
+
+    try:
+        await bot.load_extension("src.games.lottery")
+        print("Loaded weekly lottery cog ✅")
+    except Exception as e:
+        print(f"Failed loading weekly lottery: {e}")
+    try:
+        await bot.load_extension("src.games.blackjack_v2")
+        print("Loaded blackjack_v2 cog ✅")
+    except Exception as e:
+        print(f"Failed loading blackjack_v2: {e}")
 
 @bot.event
 async def on_ready():
     try:
+        # ---- Populate emoji cache ---
+        from src.bot.base_cog import BaseCog
+        temp_cog = BaseCog(bot)
+        await temp_cog.populate_emoji_cache()
+        
         guild_id = os.getenv("DISCORD_GUILD_ID")
         
         # ---- Guild-specific sync (copy globals for fast dev), then global ----
@@ -161,6 +183,14 @@ async def on_ready():
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         print("Command sync failed:", e)
+
+@bot.event
+async def on_guild_emojis_update(guild, before, after):
+    """Automatically refresh emoji cache when emojis are added/removed"""
+    try:
+        print(f"🔄 Emoji cache refreshed due to changes in guild {guild.name}")
+    except Exception as e:
+        print(f"❌ Failed to refresh emoji cache: {e}")
 
 # ================= Admin sync helpers =================
 @is_admin_or_manager()

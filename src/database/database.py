@@ -293,7 +293,11 @@ class Database:
                         status TEXT DEFAULT 'open',
                         winning_option BIGINT,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York'),
-                        closed_at TIMESTAMP WITH TIME ZONE
+                        closed_at TIMESTAMP WITH TIME ZONE,
+                        created_by BIGINT,
+                        created_ts BIGINT,
+                        lock_ts BIGINT,
+                        announce_channel_id BIGINT
                     )
                 """)
                 
@@ -330,6 +334,55 @@ class Database:
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York')
                     )
                 """)
+
+                # Run migrations
+                await self._run_migrations(conn)
+
+                await conn.execute("""
+                CREATE TABLE IF NOT EXISTS wlottery_weeks (
+                    id BIGSERIAL PRIMARY KEY,
+                    guild_id BIGINT NOT NULL,
+                    start_ts BIGINT NOT NULL,
+                    end_ts   BIGINT NOT NULL,
+                    base_pot BIGINT NOT NULL,
+                    rolled_over_from BOOLEAN DEFAULT FALSE,
+                    UNIQUE (guild_id, start_ts, end_ts)
+                );
+                """)
+                # entries
+                await conn.execute("""
+                CREATE TABLE IF NOT EXISTS wlottery_entries (
+                    week_id BIGINT NOT NULL REFERENCES wlottery_weeks(id) ON DELETE CASCADE,
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    earned_sum BIGINT NOT NULL DEFAULT 0,
+                    tickets   BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (week_id, guild_id, user_id)
+                );
+                """)
+                # winners (now track status + claim window)
+                await conn.execute("""
+                CREATE TABLE IF NOT EXISTS wlottery_winners (
+                    id BIGSERIAL PRIMARY KEY,
+                    week_id BIGINT NOT NULL REFERENCES wlottery_weeks(id) ON DELETE CASCADE,
+                    guild_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    place SMALLINT NOT NULL, 
+                    pot_awarded BIGINT NOT NULL,
+                    drawn_ts BIGINT NOT NULL,
+                    claim_deadline_ts BIGINT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'claimed' | 'expired'
+                    claimed_at_ts BIGINT
+                );
+                """)
+                # rollover bank per guild
+                await conn.execute("""
+                CREATE TABLE IF NOT EXISTS wlottery_rollover_bank (
+                    guild_id BIGINT PRIMARY KEY,
+                    amount BIGINT NOT NULL DEFAULT 0
+                );
+                """)
+
                 
                 # ================= Indexes for Performance =================
                 
@@ -373,6 +426,21 @@ class Database:
                     print("ℹ️  Database migrations already completed, skipping...")
                 
                 self._initialized = True
+
+    async def _run_migrations(self, conn):
+        """Run database migrations."""
+        # Migration 1: Add missing columns to predictions table
+        try:
+            await conn.execute("""
+                ALTER TABLE predictions 
+                ADD COLUMN IF NOT EXISTS created_by BIGINT,
+                ADD COLUMN IF NOT EXISTS created_ts BIGINT,
+                ADD COLUMN IF NOT EXISTS lock_ts BIGINT,
+                ADD COLUMN IF NOT EXISTS announce_channel_id BIGINT
+            """)
+            print("✅ Migration 1 completed: Added missing columns to predictions table")
+        except Exception as e:
+            print(f"⚠️ Migration 1 failed: {e}")
     
     async def ensure_initialized(self):
         """Ensure database is initialized before operations."""

@@ -21,16 +21,42 @@ SUITS = ["S","H","D","C"]
 
 CARD_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "cards"))
 
-def card_png(rank: str, suit: str) -> str:
-    return os.path.join(CARD_BASE, f"{rank}{suit}.png")
+# Card emoji mapping
+CARD_EMOJIS = {
+    # Hearts (Red)
+    "AH": "🂱", "2H": "🂲", "3H": "🂳", "4H": "🂴", "5H": "🂵", 
+    "6H": "🂶", "7H": "🂷", "8H": "🂸", "9H": "🂹", "TH": "🂺", 
+    "JH": "🂻", "QH": "🂽", "KH": "🂾",
+    
+    # Diamonds (Red) 
+    "AD": "🃁", "2D": "🃂", "3D": "🃃", "4D": "🃄", "5D": "🃅",
+    "6D": "🃆", "7D": "🃇", "8D": "🃈", "9D": "🃉", "TD": "🃊",
+    "JD": "🃋", "QD": "🃍", "KD": "🃎",
+    
+    # Clubs (Black)
+    "AC": "🃑", "2C": "🃒", "3C": "🃓", "4C": "🃔", "5C": "🃕",
+    "6C": "🃖", "7C": "🃗", "8C": "🃘", "9C": "🃙", "TC": "🃚",
+    "JC": "🃛", "QC": "🃝", "KC": "🃞",
+    
+    # Spades (Black)
+    "AS": "🂡", "2S": "🂢", "3S": "🂣", "4S": "🂤", "5S": "🂥",
+    "6S": "🂦", "7S": "🂧", "8S": "🂨", "9S": "🂩", "TS": "🂪",
+    "JS": "🂫", "QS": "🂭", "KS": "🂮",
+    
+    # Special cards
+    "back": "🂠"  # Card back for hidden dealer cards
+}
 
-def back_png() -> str:
-    return os.path.join(CARD_BASE, "back.png")
+# def card_png(rank: str, suit: str) -> str:
+#     return os.path.join(CARD_BASE, f"{rank}{suit}.png")
 
-def _assert_assets():
-    for name in ("AS.png", "KH.png", "2C.png", "TD.png", "back.png"):
-        if not os.path.isfile(os.path.join(CARD_BASE, name)):
-            raise FileNotFoundError(f"Missing card asset: {name} (expected in {CARD_BASE})")
+# def back_png() -> str:
+#     return os.path.join(CARD_BASE, "back.png")
+
+# def _assert_assets():
+#     for name in ("AS.png", "KH.png", "2C.png", "TD.png", "back.png"):
+#         if not os.path.isfile(os.path.join(CARD_BASE, name)):
+#             raise FileNotFoundError(f"Missing card asset: {name} (expected in {CARD_BASE})")
 
 # ---------- blackjack logic ----------
 def new_shoe(num_decks: int = 6) -> List[Tuple[str,str]]:
@@ -55,6 +81,7 @@ def hand_value(cards: List[Tuple[str,str]]) -> Tuple[int,bool]:
 
 def is_blackjack(cards: List[Tuple[str,str]]) -> bool:
     return len(cards) == 2 and hand_value(cards)[0] == 21
+
 
 # ---------- View ----------
 class BJView(discord.ui.View):
@@ -89,9 +116,12 @@ class BJView(discord.ui.View):
 
     @discord.ui.button(label="Stand", style=discord.ButtonStyle.primary)
     async def stand_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
-        st = self.cog.states.get(self.key)
-        if not st or st["done"]: return await interaction.response.defer()
-        await self.cog.finish(st)
+        try:
+            st = self.cog.states.get(self.key)
+            if not st or st["done"]: return await interaction.response.defer()
+            await self.cog.finish(st)
+        except Exception as e:
+            print(f"stand_btn error: {e!r}")
 
     @discord.ui.button(label="Double Down", style=discord.ButtonStyle.danger)
     async def dd_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -116,7 +146,7 @@ class Blackjack(BaseCog):
     """Blackjack using your unified currency system (no negative balances)."""
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
-        _assert_assets()
+        # _assert_assets()
         self.shoes: Dict[int, List[Tuple[str,str]]] = {}
         self.states: Dict[Tuple[int,int], Dict] = {}
         self.user_locks: Dict[int, asyncio.Lock] = {}
@@ -129,122 +159,149 @@ class Blackjack(BaseCog):
             self.shoes[guild_id] = shoe
         return shoe
 
+    def format_cards_as_emojis(self, cards: List[Tuple[str,str]], show_hidden: bool = True) -> str:
+        """Convert card tuples to emoji string"""
+        emoji_cards = []
+        for rank, suit in cards:
+            if not show_hidden and rank == "?":
+                discord_emoji = self.get_cached_emoji('back')
+                emoji_cards.append(discord_emoji)
+            else:
+                card_key = f"{rank}{suit}"
+                # Try to get Discord server emoji from BaseCog cache first, fallback to Unicode emoji
+                discord_emoji = self.get_cached_emoji(card_key)
+                if discord_emoji:
+                    emoji_cards.append(discord_emoji)
+                else:
+                    emoji_cards.append(CARD_EMOJIS.get(card_key, 'back'))
+        return " ".join(emoji_cards)
+
+    def format_hand_display(self, cards: List[Tuple[str,str]], show_hidden: bool = True) -> str:
+        """Format a hand with emojis and total value"""
+        emoji_cards = self.format_cards_as_emojis(cards, show_hidden)
+        if show_hidden:
+            total, _ = hand_value(cards)
+            return f"{emoji_cards} (**{total}**)"
+        else:
+            return emoji_cards
+
     async def build_embed(self, st: Dict, *, reveal: bool, footer: Optional[str]=None) -> discord.Embed:
         bet = st["bet"]
         p_total,_ = hand_value(st["player"])
         e = discord.Embed(title=f"Blackjack — Bet {fmt_tc(bet)}", color=discord.Color.blurple())
 
         if reveal:
-            d_total,_ = hand_value(st["dealer"])
-            dealer_line = " ".join(f"**{r}**" for r,_ in st["dealer"]) + f" (**{d_total}**)"
+            dealer_line = self.format_hand_display(st["dealer"], show_hidden=True)
         else:
-            up = st["dealer"][0]
-            dealer_line = f"**{up[0]}** and ?"
+            # Show only first dealer card + hidden card
+            visible_cards = [st["dealer"][0], ("?", "?")]
+            dealer_line = self.format_hand_display(visible_cards, show_hidden=False) + " (?)"
         e.add_field(name="Dealer's Cards", value=dealer_line, inline=False)
 
-        player_line = " ".join(f"**{r}**" for r,_ in st["player"]) + f" (**{p_total}**)"
+        player_line = self.format_hand_display(st["player"], show_hidden=True)
         e.add_field(name="Your Cards" if not reveal else "You", value=player_line, inline=False)
 
         if footer: e.set_footer(text=footer)
         return e
 
-    def files_for(self, st: Dict, *, reveal: bool) -> List[discord.File]:
-        files: List[discord.File] = []
-        shown = st["dealer"] if reveal else [st["dealer"][0], ("?","?")]
-        for i,(r,s) in enumerate(shown):
-            path = back_png() if r == "?" else card_png(r,s)
-            files.append(discord.File(path, filename=f"dealer_{i}.png"))
-        for i,(r,s) in enumerate(st["player"]):
-            files.append(discord.File(card_png(r,s), filename=f"player_{i}.png"))
-        return files
+    # def files_for(self, st: Dict, *, reveal: bool) -> List[discord.File]:
+    #     files: List[discord.File] = []
+    #     shown = st["dealer"] if reveal else [st["dealer"][0], ("?","?")]
+    #     for i,(r,s) in enumerate(shown):
+    #         path = back_png() if r == "?" else card_png(r,s)
+    #         files.append(discord.File(path, filename=f"dealer_{i}.png"))
+    #     for i,(r,s) in enumerate(st["player"]):
+    #         files.append(discord.File(card_png(r,s), filename=f"player_{i}.png"))
+    #     return files
 
     async def refresh(self, interaction: discord.Interaction, st: Dict, footer: Optional[str]=None):
         emb = await self.build_embed(st, reveal=False, footer=footer)
-        files = self.files_for(st, reveal=False)
-        await interaction.response.edit_message(embed=emb, attachments=files, view=st["view"])
+        # files = self.files_for(st, reveal=False)
+        await interaction.response.edit_message(embed=emb, view=st["view"])
 
     async def finish(self, st: Dict, auto_reason: Optional[str]=None):
-        if st["done"]: return
-        st["done"] = True
-        for child in st["view"].children:
-            if isinstance(child, discord.ui.Button): child.disabled = True
+        try:
+            if st["done"]: return
+            st["done"] = True
+            for child in st["view"].children:
+                if isinstance(child, discord.ui.Button): child.disabled = True
 
-        while True:
-            d_total, d_soft = hand_value(st["dealer"])
-            if d_total < 17 or (d_total == 17 and d_soft):
-                st["dealer"].append(st["shoe"].pop())
-            else:
-                break
+            while True:
+                d_total, d_soft = hand_value(st["dealer"])
+                if d_total < 17 or (d_total == 17 and d_soft):
+                    st["dealer"].append(st["shoe"].pop())
+                else:
+                    break
 
-        p_total,_ = hand_value(st["player"])
-        d_total,_ = hand_value(st["dealer"])
-        bet = st["bet"]
+            p_total,_ = hand_value(st["player"])
+            d_total,_ = hand_value(st["dealer"])
+            bet = st["bet"]
 
-        payout = 0
-        result = ""
-        color = discord.Color.gold()
-
-        if p_total > 21:
-            result = f"Dealer wins. You lose {fmt_tc(bet)}."
-            color = discord.Color.red()
-        elif d_total > 21:
-            payout = bet * 2
-            result = f"You win! Payout {fmt_tc(payout)}."
-            color = discord.Color.green()
-        elif is_blackjack(st["player"]) and not is_blackjack(st["dealer"]):
-            payout = math.floor(bet * 2.5)
-            result = f"Blackjack! Payout {fmt_tc(payout)}."
-            color = discord.Color.green()
-        elif p_total > d_total:
-            payout = bet * 2
-            result = f"You win! Payout {fmt_tc(payout)}."
-            color = discord.Color.green()
-        elif p_total < d_total:
-            result = f"Dealer wins. You lose {fmt_tc(bet)}."
-            color = discord.Color.red()
-        else:
-            payout = bet
-            result = f"Push. Your bet {fmt_tc(bet)} is returned."
+            payout = 0
+            result = ""
             color = discord.Color.gold()
 
-        if payout:
+            if p_total > 21:
+                result = f"Dealer wins. You lose {fmt_tc(bet)}."
+                color = discord.Color.red()
+            elif d_total > 21:
+                payout = bet * 2
+                result = f"You win! Payout {fmt_tc(payout)}."
+                color = discord.Color.green()
+            elif is_blackjack(st["player"]) and not is_blackjack(st["dealer"]):
+                payout = math.floor(bet * 2.5)
+                result = f"Blackjack! Payout {fmt_tc(payout)}."
+                color = discord.Color.green()
+            elif p_total > d_total:
+                payout = bet * 2
+                result = f"You win! Payout {fmt_tc(payout)}."
+                color = discord.Color.green()
+            elif p_total < d_total:
+                result = f"Dealer wins. You lose {fmt_tc(bet)}."
+                color = discord.Color.red()
+            else:
+                payout = bet
+                result = f"Push. Your bet {fmt_tc(bet)} is returned."
+                color = discord.Color.gold()
+
+            if payout:
+                try:
+                    await self.add_cash(st["user_id"], st["guild_id"], payout, "Blackjack payout")
+                except Exception as e:
+                    result += f"\n⚠️ Payout error: {e}"
+
+            # --- Weekly Lottery: award tickets on net-positive winnings (Blackjack) ---
             try:
-                await self.add_cash(st["user_id"], st["guild_id"], payout, "Blackjack payout")
-            except Exception as e:
-                result += f"\n⚠️ Payout error: {e}"
+                net_profit = int(payout) - int(bet)
+                if net_profit > 0:
+                    self.bot.dispatch(
+                        "gamble_winnings",
+                        st["guild_id"],
+                        st["user_id"],
+                        net_profit,
+                        "Blackjack",
+                    )
+            except Exception:
+                pass
 
-        # --- Weekly Lottery: award tickets on net-positive winnings (Blackjack) ---
-        try:
-            net_profit = int(payout) - int(bet)
-            if net_profit > 0:
-                self.bot.dispatch(
-                    "gamble_winnings",
-                    st["guild_id"],
-                    st["user_id"],
-                    net_profit,
-                    "Blackjack",
-                )
-        except Exception:
-            pass
-        # --- end weekly lottery block ---
+            emb = discord.Embed(title="Blackjack — Result", color=color)
+            emb.add_field(
+                name="Dealer's Cards",
+                value=self.format_hand_display(st["dealer"], show_hidden=True),
+                inline=False
+            )
+            emb.add_field(
+                name="You",
+                value=self.format_hand_display(st["player"], show_hidden=True), inline=False
+            )
+            emb.add_field(name="Result", value=result, inline=False)
+            if auto_reason: emb.set_footer(text=auto_reason)
 
-        emb = discord.Embed(title="Blackjack — Result", color=color)
-        emb.add_field(
-            name="Dealer's Cards",
-            value=" ".join(f"**{r}**" for r,_ in st["dealer"]) + f" (**{d_total}**)",
-            inline=False
-        )
-        emb.add_field(
-            name="You",
-            value=" ".join(f"**{r}**" for r,_ in st["player"]) + f" (**{p_total}**)",
-            inline=False
-        )
-        emb.add_field(name="Result", value=result, inline=False)
-        if auto_reason: emb.set_footer(text=auto_reason)
-
-        files = self.files_for(st, reveal=True)
-        await st["message"].edit(embed=emb, attachments=files, view=st["view"])
-        self.states.pop(st["key"], None)
+            # files = self.files_for(st, reveal=True)
+            await st["message"].edit(embed=emb, view=st["view"])
+            self.states.pop(st["key"], None)
+        except Exception as e:
+            print(f"finish error: {e!r}")
 
     # ---------- shared logic ----------
     async def _start_blackjack(self, interaction: discord.Interaction, bet: int):
@@ -295,8 +352,8 @@ class Blackjack(BaseCog):
         self.states[key] = st
 
         emb = await self.build_embed(st, reveal=False)
-        files = self.files_for(st, reveal=False)
-        await interaction.response.send_message(embed=emb, files=files, view=view)
+        # files = self.files_for(st, reveal=False)
+        await interaction.response.send_message(embed=emb, view=view)
         msg = await interaction.original_response()
         st["message"] = msg
         view.message = msg

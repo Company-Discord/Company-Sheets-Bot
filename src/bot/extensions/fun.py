@@ -1,9 +1,12 @@
 # CC to TC without DB 
 import os
+import re
 import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
+from typing import Any, Optional, Dict
+from src.bot.base_cog import BaseCog
 
 # Emojis (set these in .env for custom server emojis)
 UNB_ICON = os.getenv("CURRENCY_EMOTE", "")      # UnbelievaBoat
@@ -12,6 +15,11 @@ ENG_ICON = os.getenv("CURRENCY_EMOJI", "")      # Engauge
 # Fixed conversion rate (override via .env EXCHANGE_RATE_UNB_PER_ENG)
 UNB_PER_ENG = int(os.getenv("EXCHANGE_RATE_UNB_PER_ENG", "125"))
 
+# API endpoints
+RABBIT_API_RANDOM = os.getenv("RABBIT_API_URL", "https://rabbit-api-two.vercel.app/api/random")
+DOG_API_RANDOM = os.getenv("DOG_API_URL", "https://dog.ceo/api/breeds/image/random")
+CAT_API_RANDOM = "https://api.thecatapi.com/v1/images/search"
+CAT_API_KEY = os.getenv("CAT_API_KEY", "")
 # ============================ Exceptions ============================
 class ProviderError(Exception): ...
 class InsufficientFunds(ProviderError): ...
@@ -143,36 +151,175 @@ class BuyUnbModal(discord.ui.Modal, title="Buy TC"):
         )
 
 # ============================ Cog ============================
-class Fun(commands.Cog):
-    """
-    Minimal 'fun' cog containing only the exchange commands.
-    """
+class Fun(BaseCog):
     def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self._eng = Engauge()
-        # self._unb = UnbelievaBoat()  # COMMENTED OUT - Using unified database system instead
-        self._rate = UNB_PER_ENG
+        super().__init__(bot)
 
-        # Optional: scope slash commands to a single guild to speed up registration
-        guild_id = os.getenv("DISCORD_GUILD_ID")
-        if guild_id:
-            guild_obj = discord.Object(id=int(guild_id))
-            for cmd in self.__cog_app_commands__:
-                cmd.guild = guild_obj
+    @staticmethod
+    def _extract_bunny_image_url(payload: Any) -> Optional[str]:
+        """
+        The API returns JSON; we don't rely on a fixed schema.
+        Try common keys first, then fall back to 'find any URL-looking string'.
+        """
+        # Common simple shapes
+        if isinstance(payload, dict):
+            for key in ("url", "image", "img", "link", "src"):
+                v = payload.get(key)
+                if isinstance(v, str) and v.startswith("http"):
+                    return v
+            # Sometimes the image is nested one level deep
+            for v in payload.values():
+                if isinstance(v, dict):
+                    for key in ("url", "image", "img", "link", "src"):
+                        sv = v.get(key)
+                        if isinstance(sv, str) and sv.startswith("http"):
+                            return sv
+                elif isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str) and item.startswith("http"):
+                            return item
+                        if isinstance(item, dict):
+                            for key in ("url", "image", "img", "link", "src"):
+                                sv = item.get(key)
+                                if isinstance(sv, str) and sv.startswith("http"):
+                                    return sv
+        elif isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, str) and item.startswith("http"):
+                    return item
+                if isinstance(item, dict):
+                    for key in ("url", "image", "img", "link", "src"):
+                        sv = item.get(key)
+                        if isinstance(sv, str) and sv.startswith("http"):
+                            return sv
 
-    exchange = app_commands.Group(name="exchange", description="Engauge → UnbelievaBoat")
+        # Fallback: scan for any URL in the JSON dump
+        text = str(payload)
+        m = re.search(r"https?://\S+\.(?:png|jpg|jpeg|gif|webp)", text, flags=re.I)
+        return m.group(0) if m else None
+    @staticmethod
+    def _extract_dog_image_url(payload: Any) -> str:
+        """
+        Dog CEO API has a stable schema: { "message": <url>, "status": "success" }
+        """
+        if isinstance(payload, dict):
+            url = payload.get("message")
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+        return ""
 
-    @exchange.command(name="rate", description="Show the current fixed rate")
-    async def exchange_rate(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            f"Current rate: **1 {ENG_ICON} → {self._rate} {UNB_ICON}**.",
-            ephemeral=True
-        )
+    @staticmethod
+    def _extract_cat_image_url(payload: Any) -> Optional[str]:
+        """
+        The Cat API returns an array of objects with 'url' field: [{ "url": <url>, ... }]
+        """
+        if isinstance(payload, list) and len(payload) > 0:
+            first_item = payload[0]
+            if isinstance(first_item, dict):
+                url = first_item.get("url")
+                if isinstance(url, str) and url.startswith("http"):
+                    return url
+        return None
 
-    @exchange.command(name="buy", description="Buy TC using CC (opens a pop-up)")
-    async def exchange_buy(self, interaction: discord.Interaction):
-        modal = BuyUnbModal(self, interaction, self._rate)
-        await interaction.response.send_modal(modal)
+    # ============================ Dog ============================
+    @app_commands.command(name="dog", description="Send a random dog image")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
+    async def dog(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(DOG_API_RANDOM, timeout=15) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"API returned HTTP {resp.status}")
+                    data: Dict[str, Any] = await resp.json()
+
+            img_url = self._extract_dog_image_url(data)
+            if not img_url:
+                raise RuntimeError("Couldn't find an image URL in the API response.")
+
+            embed = discord.Embed(
+                title="Here’s a dog! 🐶",
+                color=discord.Color.random()
+            )
+            embed.set_image(url=img_url)
+            embed.set_footer(text="Source: dog.ceo")
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception:
+            await interaction.followup.send(
+                "Couldn't fetch a dog right now. Try again in a moment 🐕",
+                ephemeral=True
+            )
+
+    # ============================ Bunny ============================
+    @app_commands.command(name="bunny", description="Send a random bunny image")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
+    async def bunny(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(RABBIT_API_RANDOM, timeout=15) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"API returned HTTP {resp.status}")
+                    data: Dict[str, Any] = await resp.json(content_type=None)
+
+            img_url = self._extract_bunny_image_url(data)
+            if not img_url:
+                raise RuntimeError("Couldn't find an image URL in the API response.")
+
+            embed = discord.Embed(
+                title="Here’s a bunny! 🐰",
+                color=discord.Color.random()
+            )
+            embed.set_image(url=img_url)
+            embed.set_footer(text="Source: rabbit-api-two.vercel.app")
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            # Keep errors out of chat; give a clean message instead.
+            await interaction.followup.send(
+                "Couldn't fetch a bunny right now. Try again in a moment 🐇",
+                ephemeral=True
+            )
+    # ============================ Cat ============================
+    @app_commands.command(name="cat", description="Send a random cat image")
+    @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
+    async def cat(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+
+        try:
+            headers = {}
+            if CAT_API_KEY:
+                headers["x-api-key"] = CAT_API_KEY
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(CAT_API_RANDOM, headers=headers, timeout=15) as resp:
+                    if resp.status != 200:
+                        raise RuntimeError(f"API returned HTTP {resp.status}")
+                    data: Dict[str, Any] = await resp.json()
+
+            img_url = self._extract_cat_image_url(data)
+            if not img_url:
+                raise RuntimeError("Couldn't find an image URL in the API response.")
+
+            embed = discord.Embed(
+                title="Here's a cat! 🐱",
+                color=discord.Color.random()
+            )
+            embed.set_image(url=img_url)
+            embed.set_footer(text="Source: The Cat API")
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception:
+            await interaction.followup.send(
+                "Couldn't fetch a cat right now. Try again in a moment 🐈",
+                ephemeral=True
+            )
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Fun(bot))

@@ -109,72 +109,51 @@ class WeeklyLottery(BaseCog):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self._locks: Dict[int, asyncio.Lock] = {}
-        self._init_task = asyncio.create_task(self._init_tables())
         self._weekly_draw_loop.start()
         self._claim_sweeper.start()
 
     def cog_unload(self):
         self._weekly_draw_loop.cancel()
         self._claim_sweeper.cancel()
-        if not self._init_task.done():
-            self._init_task.cancel()
+        # if not self._init_task.done():
+        #     self._init_task.cancel()
 
-    # -------------------- DB: Tables --------------------
-
-    async def _init_tables(self):
+    # -------------------- Ticket accrual (events) --------------------
+    @commands.Cog.listener()
+    async def on_gamble_winnings(self, guild_id: int, user_id: int, amount: int, source: str):
         """
-        Creates weekly tables if they don't exist; namespaced to avoid collisions with daily.
+        Games dispatch this ONLY when they credit net-positive winnings.
+        Examples:
+            Blackjack: profit = payout - bet (if > 0)
+            High/Low:  profit = bet (even-money)
+            Push/loss: do not dispatch
         """
-        async with self.db._pool.acquire() as conn:
-            # weeks
-            await conn.execute("""
-            CREATE TABLE IF NOT EXISTS wlottery_weeks (
-                id BIGSERIAL PRIMARY KEY,
-                guild_id BIGINT NOT NULL,
-                start_ts BIGINT NOT NULL,
-                end_ts   BIGINT NOT NULL,
-                base_pot BIGINT NOT NULL,
-                rolled_over_from BOOLEAN DEFAULT FALSE,
-                UNIQUE (guild_id, start_ts, end_ts)
-            );
-            """)
-            # entries
-            await conn.execute("""
-            CREATE TABLE IF NOT EXISTS wlottery_entries (
-                week_id BIGINT NOT NULL REFERENCES wlottery_weeks(id) ON DELETE CASCADE,
-                guild_id BIGINT NOT NULL,
-                user_id BIGINT NOT NULL,
-                earned_sum BIGINT NOT NULL DEFAULT 0,
-                tickets   BIGINT NOT NULL DEFAULT 0,
-                PRIMARY KEY (week_id, guild_id, user_id)
-            );
-            """)
-            # winners (now track status + claim window)
-            await conn.execute("""
-            CREATE TABLE IF NOT EXISTS wlottery_winners (
-                id BIGSERIAL PRIMARY KEY,
-                week_id BIGINT NOT NULL REFERENCES wlottery_weeks(id) ON DELETE CASCADE,
-                guild_id BIGINT NOT NULL,
-                user_id BIGINT NOT NULL,
-                place SMALLINT NOT NULL,               -- 1,2,3
-                pot_awarded BIGINT NOT NULL,
-                drawn_ts BIGINT NOT NULL,
-                claim_deadline_ts BIGINT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'claimed' | 'expired'
-                claimed_at_ts BIGINT
-            );
-            """)
-            # rollover bank per guild
-            await conn.execute("""
-            CREATE TABLE IF NOT EXISTS wlottery_rollover_bank (
-                guild_id BIGINT PRIMARY KEY,
-                amount BIGINT NOT NULL DEFAULT 0
-            );
-            """)
-
-        # Ensure the current week exists for all guilds we’re in
-        for g in list(self.bot.guilds):
-            await self._ensure_current_week(g.id)
+        if amount <= 0: 
+            return
+        try:
+            wid, _, _ = await self._current_week(guild_id)
+            async with self.db._pool.acquire() as conn:
+                # ensure row
+                await conn.execute(
+                    "INSERT INTO wlottery_entries (week_id, guild_id, user_id, earned_sum, tickets) "
+                    "VALUES ($1,$2,$3,0,0) "
+                    "ON CONFLICT (week_id, guild_id, user_id) DO NOTHING",
+                    wid, guild_id, user_id
+                )
+                # update earned
+                await conn.execute(
+                    "UPDATE wlottery_entries SET earned_sum = earned_sum + $1 WHERE week_id=$2 AND guild_id=$3 AND user_id=$4",
+                    int(amount), wid, guild_id, user_id
+                )
+                # recompute tickets with cap
+                await conn.execute(
+                    "UPDATE wlottery_entries "
+                    "SET tickets = LEAST($1, earned_sum / $2) "
+                    "WHERE week_id=$3 AND guild_id=$4 AND user_id=$5",
+                    WLOTTERY_MAX_TICKETS_PER_USER, WLOTTERY_EARN_PER_TICKET, wid, guild_id, user_id
+                )
+        except Exception as e:
+            print(f"[BaseCog] on_gamble_winnings failed: {e!r}")
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         L = self._locks.get(guild_id)
@@ -271,43 +250,7 @@ class WeeklyLottery(BaseCog):
             tix = int(tix or 0)
         return base + (tix * WLOTTERY_PER_TICKET_ADD)
 
-    # -------------------- Ticket accrual (events) --------------------
 
-    @commands.Cog.listener()
-    async def on_gamble_winnings(self, guild_id: int, user_id: int, amount: int, source: str):
-        """
-        Games dispatch this ONLY when they credit net-positive winnings.
-        Examples:
-            Blackjack: profit = payout - bet (if > 0)
-            High/Low:  profit = bet (even-money)
-            Push/loss: do not dispatch
-        """
-        if amount <= 0: 
-            return
-        try:
-            wid, _, _ = await self._current_week(guild_id)
-            async with self.db._pool.acquire() as conn:
-                # ensure row
-                await conn.execute(
-                    "INSERT INTO wlottery_entries (week_id, guild_id, user_id, earned_sum, tickets) "
-                    "VALUES ($1,$2,$3,0,0) "
-                    "ON CONFLICT (week_id, guild_id, user_id) DO NOTHING",
-                    wid, guild_id, user_id
-                )
-                # update earned
-                await conn.execute(
-                    "UPDATE wlottery_entries SET earned_sum = earned_sum + $1 WHERE week_id=$2 AND guild_id=$3 AND user_id=$4",
-                    int(amount), wid, guild_id, user_id
-                )
-                # recompute tickets with cap
-                await conn.execute(
-                    "UPDATE wlottery_entries "
-                    "SET tickets = LEAST($1, earned_sum / $2) "
-                    "WHERE week_id=$3 AND guild_id=$4 AND user_id=$5",
-                    WLOTTERY_MAX_TICKETS_PER_USER, WLOTTERY_EARN_PER_TICKET, wid, guild_id, user_id
-                )
-        except Exception as e:
-            print(f"[WeeklyLottery] add_earnings failed: {e!r}")
 
     # -------------------- Draw loop & sweeper --------------------
 
@@ -326,10 +269,12 @@ class WeeklyLottery(BaseCog):
     @_weekly_draw_loop.before_loop
     async def _before_weekly_loop(self):
         await self.bot.wait_until_ready()
-        try:
-            await self._init_task
-        except Exception:
-            pass
+        # Initialize current week for all guilds
+        for g in list(self.bot.guilds):
+            try:
+                await self._ensure_current_week(g.id)
+            except Exception as e:
+                print(f"[WeeklyLottery] init error (guild {g.id}): {e!r}")
 
     # Expire unclaimed winners; move to rollover
     @tasks.loop(minutes=5)
