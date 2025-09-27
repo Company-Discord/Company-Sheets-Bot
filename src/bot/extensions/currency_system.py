@@ -508,7 +508,7 @@ class CurrencySystem(BaseCog):
         
 
         
-        await interaction.response.send_message(f"{emoji} <@{user_id}> attempted to rob <@{target_id}> with a success rate of {success_probability:.1%}", ephemeral=False)
+        await interaction.response.send_message(f"{emoji} <@{user_id}> attempted to rob <@{target_id}>", ephemeral=False)
         if success:
             # Success - transfer money
             await self.db.update_user_balance(
@@ -572,7 +572,7 @@ class CurrencySystem(BaseCog):
             
             embed = discord.Embed(
                 title="🚨 Rob Failed!",
-                description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)} ({penalty_percentage:.1%} of your total balance)!\n\n**Success Rate:** {success_probability:.1%}",
+                description=f"You failed to rob {target.display_name} and lost {self.format_currency(penalty, settings.currency_symbol)}",
                 color=discord.Color.red()
             )
             embed.set_image(url=os.getenv("ROB_FAILURE_GIF"))

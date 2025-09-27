@@ -68,7 +68,7 @@ def start_of_week_for(dt: datetime) -> WeekWindow:
     return WeekWindow(start=sat, end=fri_6pm)
 
 def human_time(dt: datetime) -> str:
-    return dt.astimezone(TZ).strftime("%a %b %-d, %I:%M %p %Z")
+    return dt.astimezone(TZ).strftime("%a %b %d, %I:%M %p %Z").replace(" 0", " ")
 
 def _weighted_draw_k(entries: List[Tuple[int, int]], k: int) -> List[int]:
     """
@@ -378,15 +378,30 @@ class WeeklyLottery(BaseCog):
                 w1 = winners[0] if len(winners) > 0 else None
                 w2 = winners[1] if len(winners) > 1 else None
                 w3 = winners[2] if len(winners) > 2 else None
-                await chan.send(
-                    f"🎉 **Weekly Lottery Results** ({human_time(window.start)} → {human_time(window.end)})\n"
-                    f"• Pot: **{fmt_tc(pot)}** • Tickets: **{total_tickets:,}**\n"
-                    f"🥇 1st {mention(w1)} — {fmt_tc(splits[0])}\n"
-                    f"🥈 2nd {mention(w2)} — {fmt_tc(splits[1])}\n"
-                    f"🥉 3rd {mention(w3)} — {fmt_tc(splits[2])}\n\n"
-                    f"**Winners have {WLOTTERY_CLAIM_WINDOW_HOURS} hours** to claim with `/wlottery claim`.\n"
-                    f"Unclaimed prizes **expire** and **roll over** to next week."
-                )
+                # Build results message with conditional amounts
+                results_lines = [
+                    f"🎉 **Weekly Lottery Results** ({human_time(window.start)} → {human_time(window.end)})",
+                    f"• Pot: **{fmt_tc(pot)}** • Tickets: **{total_tickets:,}**",
+                    f"🥇 1st {mention(w1)} — {fmt_tc(splits[0])}"
+                ]
+                
+                if w2 is not None:
+                    results_lines.append(f"🥈 2nd {mention(w2)} — {fmt_tc(splits[1])}")
+                else:
+                    results_lines.append(f"🥈 2nd {mention(w2)}")
+                    
+                if w3 is not None:
+                    results_lines.append(f"🥉 3rd {mention(w3)} — {fmt_tc(splits[2])}")
+                else:
+                    results_lines.append(f"🥉 3rd {mention(w3)}")
+                
+                results_lines.extend([
+                    "",
+                    f"**Winners have {WLOTTERY_CLAIM_WINDOW_HOURS} hours** to claim with `/wlottery claim`.",
+                    "Unclaimed prizes **expire** and **roll over** to next week."
+                ])
+                
+                await chan.send("\n".join(results_lines))
             except Exception:
                 pass
 
