@@ -230,7 +230,12 @@ async def on_guild_emojis_update(guild, before, after):
 
 # ================= Admin sync helpers =================
 @is_admin_or_manager()
-@tree.command(name="sync_commands", description="Force-resync slash commands globally (admin only).")
+@tree.command(
+    name="sync_commands",
+    description="Force-resync slash commands globally (admin only).",
+    guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
+)
+
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
