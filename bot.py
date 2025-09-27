@@ -256,14 +256,14 @@ async def sync_commands(interaction: discord.Interaction):
         guild_response = ""
         if guild_id:
             guild = discord.Object(id=int(guild_id))
-            guild_synced = await tree.sync(guild=guild)
-            guild = discord.Object(id=int(guild_id))
 
-            #hard reset the guild's command schema
+            # hard reset the guild's command schema
             bot.tree.clear_commands(guild=guild)
+
             from src.bot.command_groups import tc
             bot.tree.add_command(tc, guild=guild)
 
+            # re-add admin/debug commands
             for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
                 try:
                     bot.tree.add_command(cmd, guild=guild)
@@ -271,7 +271,6 @@ async def sync_commands(interaction: discord.Interaction):
                     print(f"Failed to re-add {getattr(cmd, 'name', cmd)}: {e}")
 
             guild_synced = await tree.sync(guild=guild)
-
             guild_names = [cmd.name for cmd in guild_synced]
             print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
             guild_response = f"🏠 **Guild**: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`\n"
