@@ -2,9 +2,13 @@
 Data models for the currency system.
 """
 
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
 
 @dataclass
@@ -45,7 +49,7 @@ class Transaction:
 class GuildSettings:
     """Guild economy settings."""
     guild_id: int
-    currency_symbol: str = "💰"
+    currency_symbol: str = TC_EMOJI
     work_cooldown: int = 30
     slut_cooldown: int = 90
     crime_cooldown: int = 180

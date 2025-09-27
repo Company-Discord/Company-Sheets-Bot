@@ -15,6 +15,16 @@ import pytz
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
+from src.bot.command_groups import tc, admin
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+
+
+"""
+Define the single global /tc group here to avoid duplicate registrations across cogs.
+Only the currency system uses /tc; other cogs are top-level.
+"""
 
 
 class CurrencySystem(BaseCog):
@@ -86,11 +96,11 @@ class CurrencySystem(BaseCog):
         print("✅ Currency system database initialized")
         
         # Optional: scope slash commands to a single guild for faster registration
-        guild_id = os.getenv("DISCORD_GUILD_ID")
-        if guild_id:
-            guild_obj = discord.Object(id=int(guild_id))
-            for cmd in self.__cog_app_commands__:
-                cmd.guild = guild_obj
+        # guild_id = os.getenv("DISCORD_GUILD_ID")
+        # if guild_id:
+        #     guild_obj = discord.Object(id=int(guild_id))
+        #     for cmd in self.__cog_app_commands__:
+        #         cmd.guild = guild_obj
     
     def get_next_reset_time(self) -> datetime:
         """Get the next 11AM EST reset time."""
@@ -168,14 +178,16 @@ class CurrencySystem(BaseCog):
             return False, int(cooldown_seconds - time_passed)
     
     # ================= Command Groups =================
-    economy = app_commands.Group(name="economy", description="Custom currency system commands")
-    admin = app_commands.Group(name="admin", description="Admin commands for economy management", parent=economy)
+    # Use centrally defined admin subgroup (under /tc)
     
     # ================= Work Command =================
-    @app_commands.command(name="work", description="Earn money through legitimate work")
+    @tc.command(name="work", description="Earn money through legitimate work")
     @is_admin_or_manager()
     async def work(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
+        # Temporary minimal body to diagnose CommandSignatureMismatch vs TypeError in body
+        # await interaction.response.send_message("ok", ephemeral=True)
+        # return
         user_id = interaction.user.id
         guild_id = interaction.guild.id
         
@@ -237,7 +249,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Slut Command =================
-    @app_commands.command(name="slut", description="High-risk earning activity with potential consequences")
+    @tc.command(name="slut", description="High-risk earning activity with potential consequences")
     @is_admin_or_manager()
     async def slut(self, interaction: discord.Interaction):
         """Slut command - high risk, high reward."""
@@ -331,7 +343,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Crime Command =================
-    @app_commands.command(name="crime", description="Criminal activities with success/failure mechanics")
+    @tc.command(name="crime", description="Criminal activities with success/failure mechanics")
     @is_admin_or_manager()
     async def crime(self, interaction: discord.Interaction):
         """Crime command - criminal activities with consequences."""
@@ -431,7 +443,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Rob Command =================
-    @app_commands.command(name="rob", description="Steal money from another user")
+    @tc.command(name="rob", description="Steal money from another user")
     @is_admin_or_manager()
     @app_commands.describe(target="The user you want to rob")
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
@@ -532,7 +544,7 @@ class CurrencySystem(BaseCog):
             )
             
             embed = discord.Embed(
-                title="💰 Rob Successful!",
+                title=f"{TC_EMOJI} Rob Successful!",
                 description=f"You successfully robbed {target.display_name} and got {self.format_currency(potential_earnings, settings.currency_symbol)}!",
                 color=discord.Color.green()
             )
@@ -586,7 +598,7 @@ class CurrencySystem(BaseCog):
         await interaction.followup.send(embed=embed)
     
     # ================= Collect Command =================
-    @app_commands.command(name="collect", description="Collect salary from your roles")
+    @tc.command(name="collect", description="Collect salary from your roles")
     @is_admin_or_manager()
     async def collect(self, interaction: discord.Interaction):
         """Collect salary from user's roles."""
@@ -667,7 +679,7 @@ class CurrencySystem(BaseCog):
         
         # Create response embed
         embed = discord.Embed(
-            title="💰 Salary Deposited!",
+            title=f"{TC_EMOJI} Salary Deposited!",
             description=f"Your salary from {len(salary_breakdown)} role(s) has been deposited to your bank!",
             color=discord.Color.green()
         )
@@ -695,7 +707,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Balance Command =================
-    @app_commands.command(name="balance", description="Check your balance and stats")
+    @tc.command(name="balance", description="Check your balance and stats")
     @is_admin_or_manager()
     @app_commands.describe(user="Check another user's balance (optional)")
     async def balance(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -716,7 +728,7 @@ class CurrencySystem(BaseCog):
         )
         
         embed.add_field(
-            name="💰 Cash",
+            name=f"{TC_EMOJI} Cash",
             value=self.format_currency(user_balance.cash, settings.currency_symbol),
             inline=True
         )
@@ -740,7 +752,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Leaderboard Command =================
-    @app_commands.command(name="leaderboard", description="View the server's money leaderboard")
+    @tc.command(name="leaderboard", description="View the server's money leaderboard")
     @is_admin_or_manager()
     @app_commands.describe(page="Page number to view (default: 1)")
     async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
@@ -790,7 +802,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Give Command =================
-    @app_commands.command(name="give", description="Give money to another user")
+    @tc.command(name="give", description="Give money to another user")
     @is_admin_or_manager()
     @app_commands.describe(user="The user to give money to", amount="Amount to give")
     async def give(self, interaction: discord.Interaction, user: discord.Member, amount: int):
@@ -854,15 +866,15 @@ class CurrencySystem(BaseCog):
         )
         
         embed = discord.Embed(
-            title="💰 Money Transferred!",
-            description=f"You gave {self.format_currency(amount, settings.currency_symbol)} to {user.display_name}!",
+            title=f"{TC_EMOJI} Money Transferred!",
+            description=f"You gave {self.format_currency(amount, settings.currency_symbol)} to <@{target_id}>!",
             color=discord.Color.green()
         )
         
         await interaction.response.send_message(embed=embed)
     
     # ================= Deposit Command =================
-    @app_commands.command(name="deposit", description="Move money from cash to bank")
+    @tc.command(name="deposit", description="Move money from cash to bank")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to deposit (or 'all' for all cash)")
     async def deposit(self, interaction: discord.Interaction, amount: str):
@@ -930,7 +942,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Withdraw Command =================
-    @app_commands.command(name="withdraw", description="Move money from bank to cash")
+    @tc.command(name="withdraw", description="Move money from bank to cash")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to withdraw (or 'all' for all bank)")
     async def withdraw(self, interaction: discord.Interaction, amount: str):
@@ -1189,7 +1201,7 @@ class CurrencySystem(BaseCog):
             inline=True
         )
         embed.add_field(
-            name="💰 Total Money",
+            name=f"{TC_EMOJI} Total Money",
             value=self.format_currency(stats.get('total_money', 0), settings.currency_symbol),
             inline=True
         )
@@ -1240,7 +1252,7 @@ class CurrencySystem(BaseCog):
             inline=True
         )
         embed.add_field(
-            name="💰 Transactions",
+            name=f"{TC_EMOJI} Transactions",
             value=str(stats.get('transactions', 0)),
             inline=True
         )

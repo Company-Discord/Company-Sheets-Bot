@@ -12,6 +12,7 @@ import pytz
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+from src.bot.command_groups import tc
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
@@ -22,10 +23,10 @@ DRAW_TIME_LOCAL = time(hour=18, minute=0)   # 6:00 PM ET (Friday)
 DRAW_WEEKDAY = 4  # Friday (Mon=0)
 
 # ---------- Currency / formatting ----------
-CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
 def fmt_tc(n: int) -> str:
-    return f"{CURRENCY_EMOTE} {n:,}"
+    return f"{TC_EMOJI} {n:,}"
 
 # ================== CONFIG (env) ==================
 # Pot construction
@@ -104,7 +105,7 @@ class WeeklyLottery(BaseCog):
     Tickets are earned from net-positive gambling winnings (via 'gamble_winnings' events).
     """
 
-    group = app_commands.Group(name="wlottery", description="Weekly Lottery (tickets from gambling wins)")
+    group = app_commands.Group(name="wlottery", description="Weekly Lottery (tickets from gambling wins)", parent=tc)
 
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
@@ -506,8 +507,7 @@ class WeeklyLottery(BaseCog):
         pretty = fmt_tc(total)
         await inter.response.send_message(
             f"✅ Claimed your weekly lottery prize: **{pretty}** to cash.\n"
-            f"Use your `/deposit` command if you’d like to move it to bank.",
-            ephemeral=True
+            f"Use your `/deposit` command if you’d like to move it to bank."
         )
 
     @group.command(name="winners", description="Show the latest winners & claim deadlines.")

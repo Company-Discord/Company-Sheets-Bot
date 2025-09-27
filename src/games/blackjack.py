@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Optional
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 
 # ---- shared infra ----
@@ -217,16 +218,6 @@ class Blackjack(BaseCog):
         if footer: e.set_footer(text=footer)
         return e
 
-    # def files_for(self, st: Dict, *, reveal: bool) -> List[discord.File]:
-    #     files: List[discord.File] = []
-    #     shown = st["dealer"] if reveal else [st["dealer"][0], ("?","?")]
-    #     for i,(r,s) in enumerate(shown):
-    #         path = back_png() if r == "?" else card_png(r,s)
-    #         files.append(discord.File(path, filename=f"dealer_{i}.png"))
-    #     for i,(r,s) in enumerate(st["player"]):
-    #         files.append(discord.File(card_png(r,s), filename=f"player_{i}.png"))
-    #     return files
-
     async def refresh(self, interaction: discord.Interaction, st: Dict, footer: Optional[str]=None):
         emb = await self.build_embed(st, reveal=False, footer=footer)
         # files = self.files_for(st, reveal=False)
@@ -383,14 +374,14 @@ class Blackjack(BaseCog):
         view.message = msg
 
     # ---------- /blackjack ----------
-    @app_commands.command(name="blackjack", description="Play Blackjack with your balance.")
+    @games.command(name="blackjack", description="Play Blackjack with your balance.")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
     @is_admin_or_manager()
     async def blackjack(self, interaction: discord.Interaction, bet: int):
         await self._start_blackjack(interaction, bet)
 
     # ---------- /bj (alias) ----------
-    @app_commands.command(name="bj", description="Play Blackjack (shortcut).")
+    @games.command(name="bj", description="Play Blackjack (shortcut).")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
     @is_admin_or_manager()
     async def blackjack_alias(self, interaction: discord.Interaction, bet: int):

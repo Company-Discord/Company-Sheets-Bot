@@ -9,6 +9,7 @@ from typing import List, Tuple, Dict, Optional
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 
 # =================== Import Unified Database ===================
@@ -16,10 +17,13 @@ from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
 
 # =================== Config ===================
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+
 CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
 
 def fmt_tc(n: int) -> str:
-    return f"💰 {n:,}"
+    return f"{TC_EMOJI} {n:,}"
 
 # ---------- card assets ----------
 RANK_CHAR_MAP = {"10": "T"}  # others already single-char like 2..9,J,Q,K,A
@@ -574,8 +578,8 @@ class PokerLite(BaseCog):
         self.active_by_user.pop(user_id, None)
 
     # ----- Commands -----
-    @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
-    @app_commands.describe(bet=f"Bet amount in 💰")
+    @games.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
+    @app_commands.describe(bet=f"Bet amount in {TC_EMOJI}")
     @is_admin_or_manager()
     async def poker(self, interaction: discord.Interaction, bet: int):
         """Main game command — bet is required, no max, must be > 0."""
@@ -659,7 +663,7 @@ class PokerLite(BaseCog):
         finally:
             self._unlock(user.id)
 
-    @app_commands.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
+    @games.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
     @is_admin_or_manager()
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -701,7 +705,7 @@ class PokerLite(BaseCog):
         emb.add_field(name="Avg Bet", value=fmt_tc(int(avg_bet)), inline=True)
         await interaction.response.send_message(embed=emb, ephemeral=False)
 
-    @app_commands.command(name="poker_leaderboard", description="Show the Poker-Lite leaderboard for this server.")
+    @games.command(name="poker_leaderboard", description="Show the Poker-Lite leaderboard for this server.")
     @app_commands.describe(
         metric="Rank by 'net' (profit) or 'wins' (default: net)",
         limit="Number of players to show (1–25, default 10)"

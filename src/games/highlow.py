@@ -8,6 +8,7 @@ from typing import Optional, Dict
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 
 from src.bot.base_cog import BaseCog
@@ -151,7 +152,7 @@ class HighLow(BaseCog):
     def _locked(self, user_id: int) -> Optional[str]:
         return "You already have a High/Low game in progress." if user_id in self.active else None
 
-    @app_commands.command(name="highlow", description="Play High/Low (1–100). Bet before seeing the number.")
+    @games.command(name="highlow", description="Play High/Low (1–100). Bet before seeing the number.")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE} (max {MAX_BET:,})")
     @is_admin_or_manager()
     async def highlow_cmd(self, interaction: discord.Interaction, bet: int):
@@ -204,7 +205,7 @@ class HighLow(BaseCog):
         self.active[st.user_id] = st
 
     # Short alias
-    @app_commands.command(name="hl", description="Alias of /highlow")
+    @games.command(name="hl", description="Alias of /highlow")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE} (max {MAX_BET:,})")
     @is_admin_or_manager()
     async def hl_alias(self, interaction: discord.Interaction, bet: int):

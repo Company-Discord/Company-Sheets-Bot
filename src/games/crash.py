@@ -10,6 +10,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
+from src.bot.command_groups import tc
 from discord.app_commands import CheckFailure
 
 # Import unified database and base cog
@@ -17,6 +18,9 @@ from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
 
 # ============================ Config ============================
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
 CURRENCY_ICON = os.getenv("CURRENCY_EMOTE") 
 if not CURRENCY_ICON:
@@ -180,7 +184,7 @@ class Crash(BaseCog):
         desc = (
             f"{top}\n"
             f"👥 **Bettors:** {bettors}\n"
-            f"💰 **Active Pool:** {CURRENCY_ICON} {pool:,}\n"
+            f"{TC_EMOJI} **Active Pool:** {CURRENCY_ICON} {pool:,}\n"
             f"💸 **Paid so far:** {CURRENCY_ICON} {winners_pool:,}\n"
             f"🧷 **Auto-cashout set:** {a_count}\n\n"
             f"Use **/crash bet** during betting, and **/crash cashout** while flying."
@@ -206,7 +210,7 @@ class Crash(BaseCog):
                         val = b.amount
                     ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
                 else:
-                    status = "💰 cashed" if b.cashed_out else "⏳ live"
+                    status = f"{TC_EMOJI} cashed" if b.cashed_out else "⏳ live"
                     ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
                     val = b.payout if b.cashed_out else b.amount
                 lines.append(f"• **{name}** — {status}{ac} — {CURRENCY_ICON} {val:,}")
@@ -285,7 +289,7 @@ class Crash(BaseCog):
 
     # -------- Commands --------
 
-    group = app_commands.Group(name="crash", description="Crash gambling game")
+    group = app_commands.Group(name="crash", description="Crash gambling game", parent=tc)
 
     @group.command(name="start", description="Start a crash round (opens betting)")
     @is_admin_or_manager()

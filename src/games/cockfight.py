@@ -3,6 +3,7 @@ Unified Cockfight game using centralized database.
 """
 
 import asyncio
+import os
 import random
 import time
 from collections import deque
@@ -10,10 +11,14 @@ from typing import Optional
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
 BASE_WIN_PERCENT = 50.0         # base chance %
 PER_USER_LIMIT = 5              # max cockfights per rolling 60s (per user)
@@ -104,7 +109,7 @@ class CockfightCog(BaseCog):
         return BASE_WIN_PERCENT + (streak * 1.0)  # +1% per streak
 
     @is_admin_or_manager()
-    @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
+    @games.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
     @app_commands.describe(bet="Amount to bet (positive integer, taken from your custom currency cash)")
     async def cockfight(self, interaction: discord.Interaction, bet: int):
         """Cockfight betting command."""
@@ -122,7 +127,7 @@ class CockfightCog(BaseCog):
         await self._handle_bet(interaction, interaction.user, bet)
 
     @is_admin_or_manager()
-    @app_commands.command(name="cockstats", description="Show your cockfight streak & current win chance.")
+    @games.command(name="cockstats", description="Show your cockfight streak & current win chance.")
     async def cockstats(self, interaction: discord.Interaction):
         """Show cockfight statistics."""
         await interaction.response.defer(ephemeral=True)
@@ -223,7 +228,7 @@ class CockfightCog(BaseCog):
             
             # Add funny win messages like in the original
             funny_win = random.choice([
-                "✅ Your chicken won the fight and made you richer! 🐓💰",
+                f"✅ Your chicken won the fight and made you richer! 🐓{TC_EMOJI}",
                 "✅ Cocky Balboa strikes again — victory is yours! 🐔🥊",
                 "✅ Your chicken pecked its way to fortune! 🤑",
                 "✅ Feathered fury brings you glory and gold! 🐓✨",

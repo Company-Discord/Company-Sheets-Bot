@@ -9,6 +9,7 @@ from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -16,10 +17,14 @@ from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
 
 load_dotenv()
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+
 # ================= Currency =================
 def cur() -> str:
     v = (os.getenv("TC_EMOJI") or "").strip()
-    return v if v else "💰"
+    return v if v else TC_EMOJI
 
 def fmt(n: int) -> str:
     return f"{cur()} {n:,}"
@@ -238,7 +243,7 @@ class HorseRace(BaseCog):
         return "```\n" + "\n".join(lines) + "\n```"
 
     # ---- Commands ----
-    @app_commands.command(name="race", description="Start a horse race betting lobby.")
+    @games.command(name="race", description="Start a horse race betting lobby.")
     @is_admin_or_manager()
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
@@ -288,7 +293,7 @@ class HorseRace(BaseCog):
             await self.start_race(interaction)
 
     # Bet by NAME (with autocomplete)
-    @app_commands.command(name="bet", description="Place a bet by horse NAME for the current race.")
+    @games.command(name="bet", description="Place a bet by horse NAME for the current race.")
     @is_admin_or_manager()
     @app_commands.describe(horse="Horse name", amount="Bet amount")
     async def bet_cmd(self, interaction: discord.Interaction, horse: str, amount: int):

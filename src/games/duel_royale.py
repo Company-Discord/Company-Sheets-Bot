@@ -7,6 +7,7 @@ import time
 import discord
 from discord.ext import commands
 from discord import app_commands
+from src.bot.command_groups import games
 from dotenv import load_dotenv
 
 # Import unified database and base cog
@@ -159,12 +160,12 @@ class DuelRoyale(BaseCog):
         
         # Set all commands in this cog to be guild-specific
         guild_id = os.getenv("DISCORD_GUILD_ID")
-        if guild_id:
-            print(f"[DuelRoyale] Setting guild-specific commands for {guild_id}")
-            guild_obj = discord.Object(id=int(guild_id))
-            for command in self.__cog_app_commands__:
-                command.guild = guild_obj
-                print(f"[DuelRoyale] Assigned guild to command: {command.name}")
+        # if guild_id:
+        #     print(f"[DuelRoyale] Setting guild-specific commands for {guild_id}")
+        #     guild_obj = discord.Object(id=int(guild_id))
+        #     for command in self.__cog_app_commands__:
+        #         command.guild = guild_obj
+        #         print(f"[DuelRoyale] Assigned guild to command: {command.name}")
         self.pending_bets: dict[int, dict] = {}
         
     async def cog_load(self):
@@ -325,7 +326,7 @@ class DuelRoyale(BaseCog):
             await asyncio.sleep(ROUND_DELAY)
 
     # ----- Instant /duel -----
-    @app_commands.command(name="duel", description="Start a 1v1 duel immediately.")
+    @games.command(name="duel", description="Start a 1v1 duel immediately.")
     @app_commands.describe(opponent="Who do you want to duel?")
     @is_admin_or_manager()
     async def duel(self, interaction: discord.Interaction, opponent: discord.Member):
@@ -391,7 +392,7 @@ class DuelRoyale(BaseCog):
             except Exception:
                 pass
 
-    @app_commands.command(name="duelbet", description="Challenge someone to a duel that requires their acceptance (with buttons).")
+    @games.command(name="duelbet", description="Challenge someone to a duel that requires their acceptance (with buttons).")
     @app_commands.describe(opponent="Who do you want to challenge? (user)", bet_amount="Amount you are betting (number)")
     @is_admin_or_manager()
     async def duelbet(self, interaction: discord.Interaction, opponent: discord.Member, bet_amount: int):
@@ -423,7 +424,7 @@ class DuelRoyale(BaseCog):
         }
 
     # ----- Instant /royale -----
-    @app_commands.command(name="royale", description="Start a multi-player battle royale immediately.")
+    @games.command(name="royale", description="Start a multi-player battle royale immediately.")
     @app_commands.describe(
         player1="Optional player", player2="Optional player", player3="Optional player",
         player4="Optional player", player5="Optional player", player6="Optional player", player7="Optional player",

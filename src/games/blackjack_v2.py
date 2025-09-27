@@ -5,6 +5,7 @@ from typing import List, Tuple, Dict, Optional
 
 import discord
 from discord import app_commands
+from src.bot.command_groups import games
 from discord.ext import commands
 
 # ---- shared infra ----
@@ -426,14 +427,14 @@ class BlackjackV2(BaseCog):
         view.message = player_msg
 
     # ---------- /blackjack ----------
-    @app_commands.command(name="blackjackv2", description="Play Blackjack with your balance.")
+    @games.command(name="blackjackv2", description="Play Blackjack with your balance.")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
     @is_admin_or_manager()
     async def blackjack(self, interaction: discord.Interaction, bet: int):
         await self._start_blackjack(interaction, bet)
 
     # ---------- /bj (alias) ----------
-    @app_commands.command(name="bjv2", description="Play Blackjack (shortcut).")
+    @games.command(name="bjv2", description="Play Blackjack (shortcut).")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
     @is_admin_or_manager()
     async def blackjack_alias(self, interaction: discord.Interaction, bet: int):

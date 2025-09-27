@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+from src.bot.command_groups import tc
 
 # Import unified database and base cog
 from src.database.database import Database
@@ -130,7 +131,7 @@ def next_11am_et(after_ts: Optional[int] = None) -> int:
 class LotteryDaily(BaseCog):
     """Daily Lottery with rollover and House mechanic (ratio hidden) using custom currency system."""
 
-    group = app_commands.Group(name="lottery", description="Daily Lottery with custom currency")
+    group = app_commands.Group(name="lottery", description="Daily Lottery with custom currency", parent=tc)
 
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)

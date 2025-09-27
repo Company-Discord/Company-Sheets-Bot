@@ -4,9 +4,14 @@ Base cog class with unified database functionality.
 
 import discord
 from discord.ext import commands
+from discord import app_commands
 from typing import Optional
 import os
 from src.database.database import Database
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+
 # Ticket rules (earned from net profit events)
 WLOTTERY_EARN_PER_TICKET = int(os.getenv("WLOTTERY_EARN_PER_TICKET", "500000"))  # 1 ticket per 500k profit
 WLOTTERY_MAX_TICKETS_PER_USER = int(os.getenv("WLOTTERY_MAX_TIX", "5"))
@@ -16,6 +21,8 @@ class BaseCog(commands.Cog):
     
     # Global emoji cache shared across all instances
     emoji_cache = {}
+    
+    # No global tc_group here; cogs can define their own groups if needed
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -30,9 +37,11 @@ class BaseCog(commands.Cog):
         
         self.db = self.bot._unified_db
     
-    def format_currency(self, amount: int, symbol: str = "💰") -> str:
+    def format_currency(self, amount: int, symbol: str = None) -> str:
         """Format currency amount with symbol."""
-        return f"💰 {amount:,}"
+        if symbol is None:
+            symbol = TC_EMOJI
+        return f"{symbol} {amount:,}"
     
     def format_time_remaining(self, seconds: int) -> str:
         """Format time remaining in human readable format."""

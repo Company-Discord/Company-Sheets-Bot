@@ -299,7 +299,7 @@ def is_admin_or_manager():
 # from datetime import datetime
 # from typing import Optional, List, Tuple
 
-# CURRENCY_EMOJI = os.getenv("TC_EMOJI", "💰")
+TC_EMOJI = os.getenv("TC_EMOJI", "💰")
 
 
 # @dataclass

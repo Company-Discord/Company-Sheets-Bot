@@ -13,6 +13,9 @@ import pytz
 from .models import UserBalance, Transaction, GuildSettings
 from src.utils.utils import get_role_data
 
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+
 # ================= Configuration =================
 # PostgreSQL connection configuration
 POSTGRES_CONFIG = {
@@ -28,7 +31,7 @@ POSTGRES_CONFIG = {
 
 # Default economy settings
 DEFAULT_SETTINGS = {
-    "currency_symbol": "💰",
+    "currency_symbol": TC_EMOJI,
     "work_cooldown": 30,
     "slut_cooldown": 90,
     "crime_cooldown": 180,
@@ -112,7 +115,7 @@ class Database:
                 await conn.execute("""
                     CREATE TABLE IF NOT EXISTS guild_settings (
                         guild_id BIGINT PRIMARY KEY,
-                        currency_symbol TEXT DEFAULT '💰',
+                        currency_symbol TEXT DEFAULT '{TC_EMOJI}',
                         work_cooldown BIGINT DEFAULT 30,
                         slut_cooldown BIGINT DEFAULT 90,
                         crime_cooldown BIGINT DEFAULT 180,

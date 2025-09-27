@@ -8,10 +8,14 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from src.utils.utils import is_admin_or_manager
+import json
 from src.api.engauge_adapter import EngaugeAdapter
 
 # ================= Env & config ==================
 load_dotenv()
+
+# Currency emoji constant
+TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_BOT_TOKEN:
@@ -159,6 +163,22 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading blackjack_v2: {e}")
 
+    # Register /tc after cogs attach commands (single startup registration)
+    try:
+        from src.bot.command_groups import tc
+        guild_id_env = os.getenv("DISCORD_GUILD_ID")
+        guild_obj = discord.Object(id=int(guild_id_env)) if guild_id_env else None
+        if guild_obj:
+            if not any(cmd.name == "tc" for cmd in bot.tree.get_commands(guild=guild_obj)):
+                bot.tree.add_command(tc, guild=guild_obj)
+                print(f"Registered /tc to guild {guild_id_env} on startup")
+        else:
+            if not any(cmd.name == "tc" for cmd in bot.tree.get_commands()):
+                bot.tree.add_command(tc)
+                print("Registered /tc globally on startup")
+    except Exception as e:
+        print(f"Startup /tc registration skipped: {e}")
+
 @bot.event
 async def on_ready():
     try:
@@ -168,17 +188,23 @@ async def on_ready():
         await temp_cog.populate_emoji_cache()
         
         guild_id = os.getenv("DISCORD_GUILD_ID")
-        
-        # ---- Guild-specific sync (copy globals for fast dev), then global ----
-        if guild_id:
-            guild = discord.Object(id=int(guild_id))
-            guild_synced = await tree.sync(guild=guild)
-            guild_names = [cmd.name for cmd in guild_synced]
-            print(f"Guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
 
-        global_synced = await tree.sync()
-        command_names = [cmd.name for cmd in global_synced]
-        print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
+        # ---- Sync commands once per process (prevents extra API calls on reconnect) ----
+        if not getattr(bot, "_did_initial_sync", False):
+            # Guild-specific sync first (fast propagation for testing)
+            if guild_id:
+                guild = discord.Object(id=int(guild_id))
+                guild_synced = await tree.sync(guild=guild)
+                guild_names = [cmd.name for cmd in guild_synced]
+                print(f"Guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
+
+            # Global sync is opt-in to avoid rate limits on startup
+            if os.getenv("SYNC_GLOBAL_ON_STARTUP", "0") == "1":
+                global_synced = await tree.sync()
+                command_names = [cmd.name for cmd in global_synced]
+                print(f"Global sync → {len(global_synced)} commands: {', '.join(command_names)}")
+
+            bot._did_initial_sync = True
 
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
@@ -232,18 +258,350 @@ async def sync_commands(interaction: discord.Interaction):
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
         print("sync_commands error:", e)
 
+
+# Dangerous: clear all commands and fully resync
+"""
+@is_admin_or_manager()
+@tree.command(name="sync_nuke", description="Danger: clear all slash commands and fully resync (admin only).", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0"))))
+async def sync_nuke(interaction: discord.Interaction):
+    await interaction.response.send_message("Clearing and resyncing commands…", ephemeral=True)
+    try:
+        # Clear guild commands first (if dev guild specified)
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            tree.clear_commands(guild=guild)
+            await tree.sync(guild=guild)
+
+        # Clear global commands
+        tree.clear_commands(guild=None)
+        
+        # Wait for Discord to process the clear
+        await asyncio.sleep(3)
+
+        # Proactively delete ALL remote commands (global & guild) via REST to avoid stale signatures
+        try:
+            app_id = bot.application_id
+            if not app_id:
+                info = await bot.application_info()
+                app_id = info.id
+
+            # Delete all guild commands
+            if guild_id:
+                gid = int(guild_id)
+                guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+                for cmd in guild_cmds:
+                    try:
+                        await bot.http.delete_guild_command(app_id, gid, cmd["id"])  # type: ignore[index]
+                    except Exception as de:
+                        print(f"Failed to delete guild cmd {cmd.get('name')}: {de}")
+                print(f"Deleted {len(guild_cmds)} guild commands via REST")
+
+            # Delete all global commands
+            global_cmds = await bot.http.get_global_commands(app_id)
+            for cmd in global_cmds:
+                try:
+                    await bot.http.delete_global_command(app_id, cmd["id"])  # type: ignore[index]
+                except Exception as de:
+                    print(f"Failed to delete global cmd {cmd.get('name')}: {de}")
+            print(f"Deleted {len(global_cmds)} global commands via REST")
+        except Exception as e:
+            print(f"Warning: failed REST deletion of /tc: {e}")
+
+        # Unload all extensions first to clear local command tree
+        for ext_path in list(bot.extensions.keys()):
+            try:
+                await bot.unload_extension(ext_path)
+                print(f"Unloaded {ext_path}")
+            except Exception as e:
+                print(f"Failed to unload {ext_path}: {e}")
+
+        # Clear the command tree completely after unloading
+        tree.clear_commands(guild=None)
+        if guild_id:
+            tree.clear_commands(guild=discord.Object(id=int(guild_id)))
+
+        # Wait a moment for unload to complete
+        await asyncio.sleep(2)
+
+        # Reload command_groups to ensure fresh Group objects, then add /tc back
+        try:
+            import importlib
+            import src.bot.command_groups as cg
+            importlib.reload(cg)
+            if guild_id:
+                guild_obj2 = discord.Object(id=int(guild_id))
+                tree.add_command(cg.tc, guild=guild_obj2)
+                print(f"Re-added fresh /tc group to guild {guild_id}")
+            else:
+                tree.add_command(cg.tc)
+                print("Re-added fresh /tc group globally")
+        except Exception as e:
+            print(f"Warning: failed to re-add /tc group: {e}")
+
+        # Reload extensions to re-register all commands cleanly
+        reloaded = []
+        exts_to_load = [
+            "src.bot.extensions.currency_system",
+            "src.bot.extensions.fun",
+            "src.bot.extensions.predictions",
+            "src.games.blackjack",
+            "src.games.blackjack_v2",
+            "src.games.cockfight",
+            "src.games.crash",
+            "src.games.duel_royale",
+            "src.games.highlow",
+            "src.games.horse_race_engauge",
+            "src.games.lottery",
+            "src.games.lottery_daily",
+            "src.games.poker_lite",
+        ]
+        only_ext ='src.bot.extensions.currency_system' # os.getenv("NUKE_LOAD_ONLY")
+        if only_ext:
+            exts_to_load = [only_ext]
+            print(f"NUKE_LOAD_ONLY active → loading only: {only_ext}")
+        for ext_path in exts_to_load:
+            try:
+                await bot.load_extension(ext_path)
+                reloaded.append(ext_path)
+                print(f"Reloaded {ext_path}")
+            except Exception as e:
+                print(f"Failed to reload {ext_path}: {e}")
+
+        # Wait before syncing
+        await asyncio.sleep(2)
+
+        # Re-register admin/debug helper commands (guild-scoped) after nuking
+        try:
+            guild_for_admin = discord.Object(id=int(guild_id)) if guild_id else None
+            # Re-add existing Command objects defined via @tree.command
+            for cmd in [sync_commands, sync_nuke, debug_tc_work, debug_tc_tree]:
+                if guild_for_admin:
+                    tree.add_command(cmd, guild=guild_for_admin)
+                else:
+                    tree.add_command(cmd)
+            print("Re-registered admin/debug commands")
+        except Exception as e:
+            print(f"Warning: failed to re-register admin/debug commands: {e}")
+
+        # Guild sync then global sync
+        guild_response = ""
+        if guild_id:
+            guild = discord.Object(id=int(guild_id))
+            guild_synced = await tree.sync(guild=guild)
+            guild_names = [cmd.name for cmd in guild_synced]
+            guild_response = f"🏠 Guild: {len(guild_synced)} commands: `{', '.join(guild_names)}`\n"
+            
+            # Wait between guild and global sync
+            await asyncio.sleep(2)
+
+        global_response = ""
+        if os.getenv("NUKE_GLOBAL_SYNC", "0") == "1" or os.getenv("SYNC_GLOBAL_ON_STARTUP", "0") == "1":
+            global_synced = await tree.sync()
+            global_names = [cmd.name for cmd in global_synced]
+            global_response = f"🌐 Global: {len(global_synced)} commands: `{', '.join(global_names)}`"
+        else:
+            global_response = "🌐 Global sync skipped"
+
+        await interaction.followup.send(
+            f"✅ Commands nuked and resynced. {guild_response}{global_response}",
+            ephemeral=True
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Nuke failed: `{e}`", ephemeral=True)
+        print("sync_nuke error:", e)
+"""
+
 # ================= Bot health =================
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
 
-@tree.command(name="test_currency", description="Test command that replies with the currency emoji.", guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID"))) if os.getenv("DISCORD_GUILD_ID") else None)
-async def test_currency(interaction: discord.Interaction):
-    currency_emoji = (os.getenv("CURRENCY_EMOJI") or "").strip() or "💰"
-    print(f"Currency emoji: {currency_emoji}")
-    embed = discord.Embed(title="Currency Test", color=discord.Color.blurple())
-    embed.add_field(name="Currency Emoji", value=currency_emoji, inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+# ================= Debug: Inspect remote schema =================
+@is_admin_or_manager()
+@tree.command(
+    name="debug_tc_work",
+    description="Show remote schema for /tc work (guild + global)",
+    guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
+)
+async def debug_tc_work(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    async def find_work(cmd_obj: dict) -> dict | None:
+        if not cmd_obj:
+            return None
+        # Recursively search options for a subcommand named 'work'
+        stack = [cmd_obj]
+        while stack:
+            node = stack.pop()
+            options = node.get("options") or []
+            for opt in options:
+                # type 1 = SUB_COMMAND, type 2 = SUB_COMMAND_GROUP per Discord API
+                if opt.get("type") in (1, 2):
+                    if opt.get("name") == "work" and opt.get("type") == 1:
+                        return opt
+                    stack.append(opt)
+        return None
+
+    try:
+        # Determine application ID robustly
+        app_id = bot.application_id
+        if not app_id:
+            info = await bot.application_info()
+            app_id = info.id
+
+        guild_id_env = os.getenv("DISCORD_GUILD_ID")
+        guild_summary = {}
+        global_summary = {}
+        local_summary = {}
+
+        # Guild schema
+        if guild_id_env:
+            gid = int(guild_id_env)
+            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+            tc_guild = next((c for c in guild_cmds if c.get("name") == "tc"), None)
+            work_guild = await find_work(tc_guild)
+            guild_summary = {
+                "tc_found": bool(tc_guild),
+                "work_found": bool(work_guild),
+                "work_options": work_guild.get("options") if work_guild else None,
+                "work_dm_permission": work_guild.get("dm_permission") if work_guild else None,
+                "work_default_member_permissions": work_guild.get("default_member_permissions") if work_guild else None,
+                "work_full": work_guild,
+            }
+
+        # Global schema
+        global_cmds = await bot.http.get_global_commands(app_id)
+        tc_global = next((c for c in global_cmds if c.get("name") == "tc"), None)
+        work_global = await find_work(tc_global)
+        global_summary = {
+            "tc_found": bool(tc_global),
+            "work_found": bool(work_global),
+            "work_options": work_global.get("options") if work_global else None,
+            "work_dm_permission": work_global.get("dm_permission") if work_global else None,
+            "work_default_member_permissions": work_global.get("default_member_permissions") if work_global else None,
+            "work_full": work_global,
+        }
+
+        # Local schema (what our tree would send)
+        try:
+            tc_local = None
+            work_local_dict = None
+            work_local_type = None
+            tc_local_children = []
+            guild_obj = discord.Object(id=int(guild_id_env)) if guild_id_env else None
+            local_cmds = bot.tree.get_commands(guild=guild_obj) if guild_obj else bot.tree.get_commands()
+            for c in local_cmds:
+                if getattr(c, "name", None) == "tc":
+                    tc_local = c
+                    break
+            if tc_local is not None:
+                # Traverse tc_local.commands to find work
+                def find_work_local(group) -> object | None:
+                    for child in getattr(group, "commands", []):
+                        if getattr(child, "name", None) == "work" and child.__class__.__name__ == "Command":
+                            return child
+                        if child.__class__.__name__ == "Group":
+                            res = find_work_local(child)
+                            if res:
+                                return res
+                    return None
+                # Also capture child types
+                for child in getattr(tc_local, "commands", []):
+                    tc_local_children.append({
+                        "name": getattr(child, "name", None),
+                        "class": child.__class__.__name__,
+                    })
+                wl = find_work_local(tc_local)
+                if wl is not None:
+                    work_local_dict = wl.to_dict(bot.tree)  # type: ignore[attr-defined]
+                    work_local_type = wl.__class__.__name__
+            local_summary = {"work_local": work_local_dict, "work_local_type": work_local_type, "tc_local_children": tc_local_children}
+        except Exception as le:
+            local_summary = {"error": f"{le}"}
+
+        payload = {
+            "guild": guild_summary,
+            "global": global_summary,
+            "local": local_summary,
+        }
+        await interaction.followup.send(
+            content=f"```json\n{json.dumps(payload, indent=2)}\n```",
+            ephemeral=True,
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Debug failed: `{e}`", ephemeral=True)
+
+# List the full remote /tc tree (guild + global)
+@is_admin_or_manager()
+@tree.command(
+    name="debug_tc_tree",
+    description="List all remote /tc subcommands (guild + global)",
+    guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
+)
+async def debug_tc_tree(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    def flatten_paths(root: dict | None) -> list[str]:
+        if not root:
+            return []
+        results: list[str] = []
+
+        def walk(node: dict, path: list[str]):
+            options = node.get("options") or []
+            for opt in options:
+                opt_type = opt.get("type")
+                name = opt.get("name")
+                if opt_type == 1:  # SUB_COMMAND
+                    results.append("/" + " ".join(path + [name]))
+                elif opt_type == 2:  # SUB_COMMAND_GROUP
+                    walk(opt, path + [name])
+
+        walk(root, [root.get("name", "tc")])
+        return results
+
+    try:
+        app_id = bot.application_id
+        if not app_id:
+            info = await bot.application_info()
+            app_id = info.id
+
+        guild_id_env = os.getenv("DISCORD_GUILD_ID")
+        guild_paths: list[str] = []
+        if guild_id_env:
+            gid = int(guild_id_env)
+            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+            tc_guild = next((c for c in guild_cmds if c.get("name") == "tc"), None)
+            guild_paths = flatten_paths(tc_guild)
+
+        global_cmds = await bot.http.get_global_commands(app_id)
+        tc_global = next((c for c in global_cmds if c.get("name") == "tc"), None)
+        global_paths = flatten_paths(tc_global)
+
+        payload = {
+            "guild_paths": guild_paths,
+            "global_paths": global_paths,
+        }
+        await interaction.followup.send(
+            content=f"```json\n{json.dumps(payload, indent=2)}\n```",
+            ephemeral=True,
+        )
+    except Exception as e:
+        await interaction.followup.send(f"❌ Debug failed: `{e}`", ephemeral=True)
+
+# ================= Global app command error logger =================
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    try:
+        print(f"AppCommandError: {type(error).__name__}: {error}")
+        data = getattr(interaction, 'data', None)
+        try:
+            print("Interaction data:")
+            print(json.dumps(data, indent=2))
+        except Exception:
+            print("Interaction data (raw):", data)
+    except Exception as log_e:
+        print("Failed to log app command error:", log_e)
 
 # ================= Run =================
 if __name__ == "__main__":
