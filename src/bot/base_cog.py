@@ -32,7 +32,7 @@ class BaseCog(commands.Cog):
     
     def format_currency(self, amount: int, symbol: str = "💰") -> str:
         """Format currency amount with symbol."""
-        return f"{symbol} {amount:,}"
+        return f"💰 {amount:,}"
     
     def format_time_remaining(self, seconds: int) -> str:
         """Format time remaining in human readable format."""
@@ -220,5 +220,3 @@ class BaseCog(commands.Cog):
         if not self.db:
             raise RuntimeError("Database not initialized")
         await self.db.cleanup_old_data(days)
-
-        # -------------------- Ticket accrual (events) --------------------

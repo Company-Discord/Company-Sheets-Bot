@@ -19,13 +19,39 @@ from src.utils.utils import is_admin_or_manager
 CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
 
 def fmt_tc(n: int) -> str:
-    return f"{CURRENCY_EMOTE} {n:,}"
+    return f"💰 {n:,}"
 
 # ---------- card assets ----------
 RANK_CHAR_MAP = {"10": "T"}  # others already single-char like 2..9,J,Q,K,A
 SUIT_CHAR_MAP = {"♠": "S", "♥": "H", "♦": "D", "♣": "C"}
 
 CARD_BASE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "assets", "cards"))
+
+# Card emoji mapping (same as blackjack.py)
+CARD_EMOJIS = {
+    # Hearts (Red)
+    "AH": "🂱", "2H": "🂲", "3H": "🂳", "4H": "🂴", "5H": "🂵", 
+    "6H": "🂶", "7H": "🂷", "8H": "🂸", "9H": "🂹", "TH": "🂺", 
+    "JH": "🂻", "QH": "🂽", "KH": "🂾",
+    
+    # Diamonds (Red) 
+    "AD": "🃁", "2D": "🃂", "3D": "🃃", "4D": "🃄", "5D": "🃅",
+    "6D": "🃆", "7D": "🃇", "8D": "🃈", "9D": "🃉", "TD": "🃊",
+    "JD": "🃋", "QD": "🃍", "KD": "🃎",
+    
+    # Clubs (Black)
+    "AC": "🃑", "2C": "🃒", "3C": "🃓", "4C": "🃔", "5C": "🃕",
+    "6C": "🃖", "7C": "🃗", "8C": "🃘", "9C": "🃙", "TC": "🃚",
+    "JC": "🃛", "QC": "🃝", "KC": "🃞",
+    
+    # Spades (Black)
+    "AS": "🂡", "2S": "🂢", "3S": "🂣", "4S": "🂤", "5S": "🂥",
+    "6S": "🂦", "7S": "🂧", "8S": "🂨", "9S": "🂩", "TS": "🂪",
+    "JS": "🂫", "QS": "🂭", "KS": "🂮",
+    
+    # Special cards
+    "back": "🂠"  # Card back for hidden dealer cards
+}
 
 def _rank_char(r: str) -> str:
     return RANK_CHAR_MAP.get(r, r)
@@ -38,6 +64,7 @@ def _card_png(card: "Card") -> str:
 
 def _back_png() -> str:
     return os.path.join(CARD_BASE, "back.png")
+
 
 # =================== Cards / Deck ===================
 SUITS = ["♠", "♥", "♦", "♣"]
@@ -135,9 +162,6 @@ def hand_label(cards: List[Card]) -> str:
     return name
 
 # =================== Beginner helpers ===================
-def render_hand_inline(cards: List[Card]) -> str:
-    """Clean one-line view for both draw phase and showdown."""
-    return "  ".join(str(c) for c in cards)
 
 def suggested_discards_for_player(cards: List[Card]) -> List[int]:
     """
@@ -287,8 +311,7 @@ class PokerView(discord.ui.View):
         self.result_text = f"**You folded.** You lose {fmt_tc(self.state.bet)}."
         await interaction.response.edit_message(
             view=self,
-            embed=self._showdown_embed(),
-            attachments=self.cog._files_showdown(self.state)
+            embed=self._showdown_embed()
         )
         self.stop()  # stop the view so wait() returns
 
@@ -361,15 +384,13 @@ class PokerView(discord.ui.View):
         if interaction and not interaction.response.is_done():
             await interaction.response.edit_message(
                 view=self,
-                embed=self._showdown_embed(),
-                attachments=self.cog._files_showdown(self.state)
+                embed=self._showdown_embed()
             )
         else:
             if self.message is not None:
                 await self.message.edit(
                     view=self,
-                    embed=self._showdown_embed(),
-                    attachments=self.cog._files_showdown(self.state)
+                    embed=self._showdown_embed()
                 )
         self.stop()  # stop the view so wait() returns
 
@@ -384,12 +405,12 @@ class PokerView(discord.ui.View):
         e = discord.Embed(title="Poker-Lite — Showdown", color=color)
         e.add_field(
             name=f"Your Hand — {hand_label(self.state.player)}",
-            value=render_hand_inline(self.state.player),
+            value=self.cog.render_hand_inline(self.state.player),
             inline=False
         )
         e.add_field(
             name=f"Dealer — {hand_label(self.state.dealer)}",
-            value=render_hand_inline(self.state.dealer),
+            value=self.cog.render_hand_inline(self.state.dealer),
             inline=False
         )
         e.add_field(name="Bet", value=fmt_tc(self.state.bet))
@@ -409,6 +430,27 @@ class PokerLite(BaseCog):
         self._starts: Dict[int, deque[float]] = {}
         self._MAX_PER = 3
         self._WINDOW = 60.0
+
+    def format_cards_as_emojis(self, cards: List["Card"]) -> str:
+        """Convert card objects to emoji string using BaseCog emoji cache"""
+        emoji_cards = []
+        for card in cards:
+            # Convert card to the format expected by CARD_EMOJIS
+            rank_char = _rank_char(card.rank)
+            suit_char = _suit_char(card.suit)
+            card_key = f"{rank_char}{suit_char}"
+            
+            # Try to get Discord server emoji from BaseCog cache first, fallback to Unicode emoji
+            discord_emoji = self.get_cached_emoji(card_key)
+            if discord_emoji:
+                emoji_cards.append(discord_emoji)
+            else:
+                emoji_cards.append(CARD_EMOJIS.get(card_key, '🂠'))
+        return " ".join(emoji_cards)
+
+    def render_hand_inline(self, cards: List[Card]) -> str:
+        """Clean one-line view for both draw phase and showdown."""
+        return self.format_cards_as_emojis(cards)
 
     # ----- image helpers for sending attachments -----
     def _files_draw_phase(self, state: "PokerState") -> List[discord.File]:
@@ -533,7 +575,7 @@ class PokerLite(BaseCog):
 
     # ----- Commands -----
     @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
-    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
+    @app_commands.describe(bet=f"Bet amount in 💰")
     @is_admin_or_manager()
     async def poker(self, interaction: discord.Interaction, bet: int):
         """Main game command — bet is required, no max, must be > 0."""
@@ -598,15 +640,16 @@ class PokerLite(BaseCog):
             f"Use the dropdown to select up to 3 cards by face, then press **Draw & Showdown**."
         )
 
+        back_card = self.get_cached_emoji("back")
         e = discord.Embed(title="Poker-Lite — Draw Phase", color=0x3498DB)
-        e.add_field(name="Your Hand", value=render_hand_inline(state.player), inline=False)
-        e.add_field(name="Dealer Hand", value="🂠 🂠 🂠 🂠 🂠", inline=False)
+        e.add_field(name="Your Hand", value=self.render_hand_inline(state.player), inline=False)
+        e.add_field(name="Dealer Hand", value=f"{back_card} {back_card} {back_card} {back_card} {back_card}", inline=False)
         e.add_field(name="Bet", value=fmt_tc(bet))
         e.add_field(name="Tips", value=tips, inline=False)
         e.set_footer(text="You have 60s to act.")
 
         view = PokerView(state, self, timeout=60)
-        await interaction.response.send_message(embed=e, view=view, files=self._files_draw_phase(state))
+        await interaction.response.send_message(embed=e, view=view)
         sent = await interaction.original_response()
         self.active_by_user[user.id] = sent.id      # per-user lock only
         view.message = sent                          

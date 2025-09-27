@@ -118,10 +118,23 @@ class BJView(discord.ui.View):
     async def stand_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
         try:
             st = self.cog.states.get(self.key)
-            if not st or st["done"]: return await interaction.response.defer()
+            if not st or st["done"]: 
+                return await interaction.response.defer()
+            
+            # Defer the interaction first to prevent timeout
+            await interaction.response.defer()
             await self.cog.finish(st)
         except Exception as e:
             print(f"stand_btn error: {e!r}")
+            # Try to respond to the interaction if it hasn't been responded to yet
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+                else:
+                    # If already responded, try to follow up
+                    await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
+            except Exception as followup_error:
+                print(f"Failed to send error message: {followup_error!r}")
 
     @discord.ui.button(label="Double Down", style=discord.ButtonStyle.danger)
     async def dd_btn(self, interaction: discord.Interaction, _: discord.ui.Button):
@@ -268,6 +281,7 @@ class Blackjack(BaseCog):
                 try:
                     await self.add_cash(st["user_id"], st["guild_id"], payout, "Blackjack payout")
                 except Exception as e:
+                    print(f"add_cash error in finish: {e!r}")
                     result += f"\n⚠️ Payout error: {e}"
 
             # --- Weekly Lottery: award tickets on net-positive winnings (Blackjack) ---
@@ -281,8 +295,8 @@ class Blackjack(BaseCog):
                         net_profit,
                         "Blackjack",
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"lottery dispatch error: {e!r}")
 
             emb = discord.Embed(title="Blackjack — Result", color=color)
             emb.add_field(
@@ -302,6 +316,16 @@ class Blackjack(BaseCog):
             self.states.pop(st["key"], None)
         except Exception as e:
             print(f"finish error: {e!r}")
+            # Try to send an error message to the user
+            try:
+                error_embed = discord.Embed(
+                    title="Blackjack Error", 
+                    description=f"An error occurred while finishing the game: {str(e)}", 
+                    color=discord.Color.red()
+                )
+                await st["message"].edit(embed=error_embed, view=st["view"])
+            except Exception as edit_error:
+                print(f"Failed to send error embed: {edit_error!r}")
 
     # ---------- shared logic ----------
     async def _start_blackjack(self, interaction: discord.Interaction, bet: int):

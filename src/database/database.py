@@ -559,87 +559,91 @@ class Database:
                                 last_rob: Optional[datetime] = None,
                                 last_collect: Optional[datetime] = None):
         """Update user's balance and stats."""
-        await self.ensure_initialized()
-        async with self._pool.acquire() as conn:
-            # Ensure user exists
-            await self.create_user(user_id, guild_id)
-            
-            # Build update query dynamically
-            updates = []
-            params = []
-            param_count = 1
-            
-            if cash_delta != 0:
-                updates.append(f"cash = cash + ${param_count}")
-                params.append(cash_delta)
-                param_count += 1
-            
-            if bank_delta != 0:
-                updates.append(f"bank = bank + ${param_count}")
-                params.append(bank_delta)
-                param_count += 1
-            
-            if total_earned_delta != 0:
-                updates.append(f"total_earned = total_earned + ${param_count}")
-                params.append(total_earned_delta)
-                param_count += 1
-            
-            if total_spent_delta != 0:
-                updates.append(f"total_spent = total_spent + ${param_count}")
-                params.append(total_spent_delta)
-                param_count += 1
-            
-            if crimes_committed_delta != 0:
-                updates.append(f"crimes_committed = crimes_committed + ${param_count}")
-                params.append(crimes_committed_delta)
-                param_count += 1
-            
-            if crimes_succeeded_delta != 0:
-                updates.append(f"crimes_succeeded = crimes_succeeded + ${param_count}")
-                params.append(crimes_succeeded_delta)
-                param_count += 1
-            
-            if robs_attempted_delta != 0:
-                updates.append(f"robs_attempted = robs_attempted + ${param_count}")
-                params.append(robs_attempted_delta)
-                param_count += 1
-            
-            if robs_succeeded_delta != 0:
-                updates.append(f"robs_succeeded = robs_succeeded + ${param_count}")
-                params.append(robs_succeeded_delta)
-                param_count += 1
-            
-            if last_work:
-                updates.append(f"last_work = ${param_count}")
-                params.append(last_work)
-                param_count += 1
-            
-            if last_slut:
-                updates.append(f"last_slut = ${param_count}")
-                params.append(last_slut)
-                param_count += 1
-            
-            if last_crime:
-                updates.append(f"last_crime = ${param_count}")
-                params.append(last_crime)
-                param_count += 1
-            
-            if last_rob:
-                updates.append(f"last_rob = ${param_count}")
-                params.append(last_rob)
-                param_count += 1
-            
-            if last_collect:
-                updates.append(f"last_collect = ${param_count}")
-                params.append(last_collect)
-                param_count += 1
-            
-            if updates:
-                updates.append("updated_at = (NOW() AT TIME ZONE 'America/New_York')")
-                query = f"UPDATE user_balances SET {', '.join(updates)} WHERE user_id = ${param_count} AND guild_id = ${param_count + 1}"
-                params.extend([user_id, guild_id])
+        try:
+            await self.ensure_initialized()
+            async with self._pool.acquire() as conn:
+                # Ensure user exists
+                await self.create_user(user_id, guild_id)
                 
-                await conn.execute(query, *params)
+                # Build update query dynamically
+                updates = []
+                params = []
+                param_count = 1
+                
+                if cash_delta != 0:
+                    updates.append(f"cash = cash + ${param_count}")
+                    params.append(cash_delta)
+                    param_count += 1
+                
+                if bank_delta != 0:
+                    updates.append(f"bank = bank + ${param_count}")
+                    params.append(bank_delta)
+                    param_count += 1
+                
+                if total_earned_delta != 0:
+                    updates.append(f"total_earned = total_earned + ${param_count}")
+                    params.append(total_earned_delta)
+                    param_count += 1
+                
+                if total_spent_delta != 0:
+                    updates.append(f"total_spent = total_spent + ${param_count}")
+                    params.append(total_spent_delta)
+                    param_count += 1
+                
+                if crimes_committed_delta != 0:
+                    updates.append(f"crimes_committed = crimes_committed + ${param_count}")
+                    params.append(crimes_committed_delta)
+                    param_count += 1
+                
+                if crimes_succeeded_delta != 0:
+                    updates.append(f"crimes_succeeded = crimes_succeeded + ${param_count}")
+                    params.append(crimes_succeeded_delta)
+                    param_count += 1
+                
+                if robs_attempted_delta != 0:
+                    updates.append(f"robs_attempted = robs_attempted + ${param_count}")
+                    params.append(robs_attempted_delta)
+                    param_count += 1
+                
+                if robs_succeeded_delta != 0:
+                    updates.append(f"robs_succeeded = robs_succeeded + ${param_count}")
+                    params.append(robs_succeeded_delta)
+                    param_count += 1
+                
+                if last_work:
+                    updates.append(f"last_work = ${param_count}")
+                    params.append(last_work)
+                    param_count += 1
+                
+                if last_slut:
+                    updates.append(f"last_slut = ${param_count}")
+                    params.append(last_slut)
+                    param_count += 1
+                
+                if last_crime:
+                    updates.append(f"last_crime = ${param_count}")
+                    params.append(last_crime)
+                    param_count += 1
+                
+                if last_rob:
+                    updates.append(f"last_rob = ${param_count}")
+                    params.append(last_rob)
+                    param_count += 1
+                
+                if last_collect:
+                    updates.append(f"last_collect = ${param_count}")
+                    params.append(last_collect)
+                    param_count += 1
+                
+                if updates:
+                    updates.append("updated_at = (NOW() AT TIME ZONE 'America/New_York')")
+                    query = f"UPDATE user_balances SET {', '.join(updates)} WHERE user_id = ${param_count} AND guild_id = ${param_count + 1}"
+                    params.extend([user_id, guild_id])
+                    
+                    await conn.execute(query, *params)
+        except Exception as e:
+            print(f"update_user_balance error: {e!r}")
+            raise
     
     async def log_transaction(self, user_id: int, guild_id: int, amount: int,
                             transaction_type: str, target_user_id: Optional[int] = None,
@@ -746,16 +750,21 @@ class Database:
     
     async def add_cash(self, user_id: int, guild_id: int, amount: int, reason: str = ""):
         """Add cash to user's balance."""
-        await self.update_user_balance(
-            user_id, guild_id,
-            cash_delta=amount,
-            total_earned_delta=amount
-        )
-        
-        await self.log_transaction(
-            user_id, guild_id, amount, "game_win", 
-            success=True, reason=reason
-        )
+        try:
+            await self.ensure_initialized()
+            await self.update_user_balance(
+                user_id, guild_id,
+                cash_delta=amount,
+                total_earned_delta=amount
+            )
+            
+            await self.log_transaction(
+                user_id, guild_id, amount, "game_win", 
+                success=True, reason=reason
+            )
+        except Exception as e:
+            print(f"add_cash error: {e!r}")
+            raise
     
     async def transfer_money(self, from_user_id: int, to_user_id: int, guild_id: int, 
                            amount: int, reason: str = "") -> bool:
