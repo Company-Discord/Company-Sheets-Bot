@@ -551,7 +551,7 @@ class WeeklyLottery(BaseCog):
         )
 
     @app_commands.command(name="wlottery-force-draw", description="(Admin) Force this week's draw now (creates claimable prizes).")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     async def force_draw(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
@@ -559,7 +559,7 @@ class WeeklyLottery(BaseCog):
         await inter.followup.send("Forced weekly draw executed.", ephemeral=True)
 
     @app_commands.command(name="wlottery-storage", description="(Admin) Show weekly lottery storage stats.")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     async def storage(self, inter: discord.Interaction):
         wid, _, _ = await self._current_week(inter.guild_id)
         async with self.db._pool.acquire() as conn:

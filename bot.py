@@ -50,8 +50,8 @@ async def random_crate_drop_task():
     while True:
         try:
             drop_count += 1
-            # wait_time = random.randint(3900, 10800)
-            wait_time = random.randint(30, 60)
+            wait_time = random.randint(3900, 10800)
+            # wait_time = random.randint(90, 180)
             print(f"⏰ Next crate drop (#{drop_count}) in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
             print(f"🎁 Dropping random crate (#{drop_count})...")
@@ -240,6 +240,7 @@ async def sync_commands(interaction: discord.Interaction):
 
 # ================= Health =================
 @tree.command(name="ping", description="Latency check.")
+@is_admin_or_manager()
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency * 1000)}ms`", ephemeral=True)
 

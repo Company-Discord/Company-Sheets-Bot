@@ -580,7 +580,6 @@ class PokerLite(BaseCog):
     # ----- Commands -----
     @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
     @app_commands.describe(bet=f"Bet amount in TC")
-    @is_admin_or_manager()
     async def poker(self, interaction: discord.Interaction, bet: int):
         """Main game command — bet is required, no max, must be > 0."""
         if interaction.guild_id is None:
@@ -665,7 +664,6 @@ class PokerLite(BaseCog):
 
     @app_commands.command(name="poker-stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
-    @is_admin_or_manager()
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
@@ -714,7 +712,6 @@ class PokerLite(BaseCog):
         app_commands.Choice(name="net", value="net"),
         app_commands.Choice(name="wins", value="wins")
     ])
-    @is_admin_or_manager()
     async def poker_leaderboard(
         self,
         interaction: discord.Interaction,

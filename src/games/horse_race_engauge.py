@@ -244,7 +244,6 @@ class HorseRace(BaseCog):
 
     # ---- Commands ----
     @app_commands.command(name="race", description="Start a horse race betting lobby.")
-    @is_admin_or_manager()
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
         rake="House rake in basis points (500=5%).",
@@ -294,7 +293,6 @@ class HorseRace(BaseCog):
 
     # Bet by NAME (with autocomplete)
     @app_commands.command(name="bet", description="Place a bet by horse NAME for the current race.")
-    @is_admin_or_manager()
     @app_commands.describe(horse="Horse name", amount="Bet amount")
     async def bet_cmd(self, interaction: discord.Interaction, horse: str, amount: int):
         r = self.active.get(interaction.channel_id or 0)

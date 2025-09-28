@@ -154,7 +154,6 @@ class HighLow(BaseCog):
 
     @app_commands.command(name="highlow", description="Play High/Low (1–100). Bet before seeing the number.")
     @app_commands.describe(bet=f"Bet amount in TC (max {MAX_BET:,}, or 'all' to bet your entire cash balance)")
-    @is_admin_or_manager()
     async def highlow_cmd(self, interaction: discord.Interaction, bet: str):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
@@ -222,7 +221,6 @@ class HighLow(BaseCog):
     # Short alias
     @app_commands.command(name="hl", description="Alias of /highlow")
     @app_commands.describe(bet=f"Bet amount in TC (max {MAX_BET:,}, or 'all' to bet your entire cash balance)")
-    @is_admin_or_manager()
     async def hl_alias(self, interaction: discord.Interaction, bet: str):
         await self.highlow_cmd.callback(self, interaction, bet)  # type: ignore
 

@@ -287,7 +287,6 @@ class Crash(BaseCog):
     # Command group removed - all commands are now flat
 
     @app_commands.command(name="crash-start", description="Start a crash round (opens betting)")
-    @is_admin_or_manager()
     @app_commands.describe(open_seconds="How long to accept bets before launch")
     async def start(self, inter: discord.Interaction, open_seconds: app_commands.Range[int, 5, 120] = 20):
         await inter.response.defer(ephemeral=True)
@@ -328,7 +327,6 @@ class Crash(BaseCog):
         await inter.followup.send(f"Crash round opened for **{open_seconds}s**. Bets are live!", ephemeral=True)
 
     @app_commands.command(name="crash-bet", description="Place a bet (optionally set auto-cashout)")
-    @is_admin_or_manager()
     @app_commands.describe(
         amount="Amount of currency to bet (integer, or 'all' to bet your entire cash balance)",
         auto_cashout="Auto-cashout at this multiplier (e.g., 1.50). Leave empty to cash manually."
@@ -390,7 +388,6 @@ class Crash(BaseCog):
         await self._refresh_embed(inter.guild_id)
 
     @app_commands.command(name="crash-cashout", description="Cash out your active bet (during flight)")
-    @is_admin_or_manager()
     async def cashout(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         rs = self._guild_round(inter.guild_id)
@@ -447,7 +444,6 @@ class Crash(BaseCog):
             await ch.send("❌ Crash round canceled — all active stakes refunded.")
 
     @app_commands.command(name="crash-status", description="Show current crash round status")
-    @is_admin_or_manager()
     async def status(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         rs = self._guild_round(inter.guild_id)

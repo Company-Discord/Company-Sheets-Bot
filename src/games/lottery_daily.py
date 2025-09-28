@@ -419,7 +419,7 @@ class LotteryDaily(BaseCog):
     # =================== Slash Commands ===================
 
     @app_commands.command(name="lottery-open", description="(Admin) Set the daily channel and open the current 24h round.")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     @app_commands.describe(announce_channel="Channel to announce & run daily rounds")
     async def open_cmd(self, inter: discord.Interaction, announce_channel: Optional[discord.TextChannel] = None):
         await inter.response.defer(ephemeral=True)
@@ -450,7 +450,6 @@ class LotteryDaily(BaseCog):
         await inter.followup.send(f"✅ Daily lottery channel set to {ch.mention}. Round opened.", ephemeral=True)
 
     @app_commands.command(name="lottery-buy", description="Buy N tickets for the current (daily) lottery.")
-    @is_admin_or_manager()
     @app_commands.describe(quantity="How many tickets to buy")
     @app_commands.describe(lottery_id="Specific lottery ID to buy into (optional)")
     async def buy_cmd(self, inter: discord.Interaction, quantity: app_commands.Range[int, 1, 1000], lottery_id: Optional[int] = None):
@@ -549,7 +548,6 @@ class LotteryDaily(BaseCog):
         )
 
     @app_commands.command(name="lottery-status", description="Show current daily lottery-status.")
-    @is_admin_or_manager()
     async def status_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         
@@ -648,7 +646,7 @@ class LotteryDaily(BaseCog):
         )
 
     @app_commands.command(name="lottery-draw", description="(Admin) Force close now.")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     async def draw_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
@@ -676,7 +674,7 @@ class LotteryDaily(BaseCog):
         await inter.followup.send("Processing end of round…", ephemeral=True)
 
     @app_commands.command(name="lottery-cancel", description="(Admin) Cancel and REFUND everyone (no rollover).")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     async def cancel_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):
@@ -722,7 +720,7 @@ class LotteryDaily(BaseCog):
         await inter.followup.send("✅ Cancelled and refunded.", ephemeral=True)
 
     @app_commands.command(name="lottery-rollover", description="(Admin) Force no-winner and roll the pot to tomorrow.")
-    @app_commands.default_permissions(administrator=True)
+    @is_admin_or_manager()
     async def rollover_nowinner_cmd(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
         async with self._lock(inter.guild_id):

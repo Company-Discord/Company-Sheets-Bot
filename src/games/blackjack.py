@@ -378,7 +378,6 @@ class Blackjack(BaseCog):
     
     @app_commands.command(name="bj", description="Play Blackjack with your balance.")
     @app_commands.describe(bet=f"Bet amount in TC (or 'all' to bet your entire cash balance)")
-    @is_admin_or_manager()
     async def blackjack(self, interaction: discord.Interaction, bet: str):
         # Handle "all" bet option
         if bet.lower() == "all":
