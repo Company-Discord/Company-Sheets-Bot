@@ -236,6 +236,38 @@ async def on_guild_emojis_update(guild, before, after):
 # ================= Admin sync helpers =================
 @is_admin_or_manager()
 @tree.command(
+    name="nuke_commands",
+    description="Delete ALL guild & global app commands (danger).",
+    guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
+)
+async def nuke_commands(interaction: discord.Interaction):
+    await interaction.response.send_message("Nuking all commands…", ephemeral=True)
+    try:
+        app_id = bot.application_id or (await bot.application_info()).id
+        gid_env = os.getenv("DISCORD_GUILD_ID")
+        gid = int(gid_env) if gid_env else None
+
+        # delete guild commands
+        if gid:
+            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+            for c in guild_cmds:
+                await bot.http.delete_guild_command(app_id, gid, c["id"])
+            print(f"NUKE: deleted {len(guild_cmds)} guild commands")
+
+        # delete global commands
+        global_cmds = await bot.http.get_global_commands(app_id)
+        for c in global_cmds:
+            await bot.http.delete_global_command(app_id, c["id"])
+        print(f"NUKE: deleted {len(global_cmds)} global commands")
+
+        await interaction.followup.send("Done. Now run /sync_commands.", ephemeral=True)
+    except Exception as e:
+        print("nuke_commands error:", e)
+        await interaction.followup.send(f"❌ Nuke failed: `{e}`", ephemeral=True)
+
+
+@is_admin_or_manager()
+@tree.command(
     name="sync_commands",
     description="Force-resync slash commands globally (admin only).",
     guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
