@@ -15,7 +15,7 @@ import pytz
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
-from src.bot.command_groups import tc, admin
+from discord import app_commands
 
 # Currency emoji constant
 TC_EMOJI = os.getenv('TC_EMOJI', '💰')
@@ -182,8 +182,9 @@ class CurrencySystem(BaseCog):
     
     # ================= Work Command =================
 
-    # internal implementation (called by the public slash callback below)
-    async def _work_impl(self, interaction: discord.Interaction):
+    @app_commands.command(name="work", description="Earn money through legitimate work")
+    @is_admin_or_manager()
+    async def work(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
         # Temporary minimal body to diagnose CommandSignatureMismatch vs TypeError in body
         # await interaction.response.send_message("ok", ephemeral=True)
@@ -249,7 +250,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Slut Command =================
-    @tc.command(name="slut", description="High-risk earning activity with potential consequences")
+    @app_commands.command(name="slut", description="High-risk earning activity with potential consequences")
     @is_admin_or_manager()
     async def slut(self, interaction: discord.Interaction):
         """Slut command - high risk, high reward."""
@@ -343,7 +344,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Crime Command =================
-    @tc.command(name="crime", description="Criminal activities with success/failure mechanics")
+    @app_commands.command(name="crime", description="Criminal activities with success/failure mechanics")
     @is_admin_or_manager()
     async def crime(self, interaction: discord.Interaction):
         """Crime command - criminal activities with consequences."""
@@ -443,7 +444,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Rob Command =================
-    @tc.command(name="rob", description="Steal money from another user")
+    @app_commands.command(name="rob", description="Steal money from another user")
     @is_admin_or_manager()
     @app_commands.describe(target="The user you want to rob")
     async def rob(self, interaction: discord.Interaction, target: discord.Member):
@@ -598,7 +599,7 @@ class CurrencySystem(BaseCog):
         await interaction.followup.send(embed=embed)
     
     # ================= Collect Command =================
-    @tc.command(name="collect", description="Collect salary from your roles")
+    @app_commands.command(name="collect", description="Collect salary from your roles")
     @is_admin_or_manager()
     async def collect(self, interaction: discord.Interaction):
         """Collect salary from user's roles."""
@@ -707,7 +708,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Balance Command =================
-    @tc.command(name="balance", description="Check your balance and stats")
+    @app_commands.command(name="balance", description="Check your balance and stats")
     @is_admin_or_manager()
     @app_commands.describe(user="Check another user's balance (optional)")
     async def balance(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -752,7 +753,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Leaderboard Command =================
-    @tc.command(name="leaderboard", description="View the server's money leaderboard")
+    @app_commands.command(name="leaderboard", description="View the server's money leaderboard")
     @is_admin_or_manager()
     @app_commands.describe(page="Page number to view (default: 1)")
     async def leaderboard(self, interaction: discord.Interaction, page: int = 1):
@@ -802,7 +803,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Give Command =================
-    @tc.command(name="give", description="Give money to another user")
+    @app_commands.command(name="give", description="Give money to another user")
     @is_admin_or_manager()
     @app_commands.describe(user="The user to give money to", amount="Amount to give")
     async def give(self, interaction: discord.Interaction, user: discord.Member, amount: int):
@@ -874,7 +875,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Deposit Command =================
-    @tc.command(name="deposit", description="Move money from cash to bank")
+    @app_commands.command(name="deposit", description="Move money from cash to bank")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to deposit (or 'all' for all cash)")
     async def deposit(self, interaction: discord.Interaction, amount: str):
@@ -942,7 +943,7 @@ class CurrencySystem(BaseCog):
         await interaction.response.send_message(embed=embed)
     
     # ================= Withdraw Command =================
-    @tc.command(name="withdraw", description="Move money from bank to cash")
+    @app_commands.command(name="withdraw", description="Move money from bank to cash")
     @is_admin_or_manager()
     @app_commands.describe(amount="Amount to withdraw (or 'all' for all bank)")
     async def withdraw(self, interaction: discord.Interaction, amount: str):
@@ -1275,16 +1276,6 @@ class CurrencySystem(BaseCog):
         )
         
         await interaction.response.send_message(embed=embed)
-
-    from src.bot.command_groups import tc
-
-    @tc.command(name="work", description="Earn money through legitimate work")
-    async def work(interaction: discord.Interaction):
-        cog = interaction.client.get_cog("CurrencySystem")
-        if not cog:
-            await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
-            return
-        await cog._work_impl(interaction)
 
 
 # ================= Setup Function =================
