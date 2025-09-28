@@ -24,19 +24,17 @@ if not DISCORD_BOT_TOKEN:
 if not os.getenv("ENGAUGE_API_TOKEN"):
     print("⚠️  ENGAUGE_API_TOKEN is not set. The predictions extension may fail to load until you set it.")
 
-# ================= Discord bot =================
+DEV_GUILD_ID = os.getenv("DISCORD_GUILD_ID")  # guild where you want fast propagation
+
+# ================= Discord bot ==================
 intents = discord.Intents.default()
-intents.members = True
+intents.members = True  # keep if your cogs read member/role data
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-write_lock = asyncio.Lock()
-
 # ================= Crate Drop System =================
 async def random_crate_drop_task():
-    """
-    Background task that drops crates at random intervals between 65–180 minutes.
-    """
+    """Drop crates at random intervals between 65–180 minutes."""
     server_id = int(os.getenv("DISCORD_GUILD_ID", 0))
     if not server_id:
         print("⚠️  DISCORD_GUILD_ID not set. Crate drops disabled.")
@@ -54,7 +52,6 @@ async def random_crate_drop_task():
             wait_time = random.randint(3900, 10800)  # 65–180 minutes
             print(f"⏰ Next crate drop in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
-
             print("🎁 Dropping random crate...")
             result = await adapter.drop_crate()
             print(f"✅ Crate dropped successfully: {result}")
@@ -114,9 +111,9 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading poker_lite: {e}")
 
-    # ---- Load Currency System (FLAT COMMANDS) ----
+    # ---- Load Currency System ----
     try:
-        await bot.load_extension("src.bot.extensions.currency_system")
+        await bot.load_extension("src.bot.extensions.currency_system") 
         print("Loaded currency_system cog ✅")
     except Exception as e:
         print(f"Failed loading currency_system: {e}")
@@ -163,35 +160,11 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed to start crate drop task: {e}")
 
-# ===== One-shot NUKE (optional; controlled by DISCORD_NUKE=1) =====
-async def _nuke_all_commands_at_startup():
-    try:
-        app_id = bot.application_id or (await bot.application_info()).id
-        gid_env = os.getenv("DISCORD_GUILD_ID")
-        gid = int(gid_env) if gid_env else None
-
-        deleted_guild = deleted_global = 0
-
-        if gid:
-            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
-            for c in guild_cmds:
-                await bot.http.delete_guild_command(app_id, gid, c["id"])
-                deleted_guild += 1
-
-        global_cmds = await bot.http.get_global_commands(app_id)
-        for c in global_cmds:
-            await bot.http.delete_global_command(app_id, c["id"])
-            deleted_global += 1
-
-        print(f"NUKE at startup: deleted guild={deleted_guild}, global={deleted_global}")
-    except Exception as e:
-        print(f"NUKE error: {e}")
-
 # ================= Ready & initial sync =================
 @bot.event
 async def on_ready():
     try:
-        # Populate emoji cache (optional)
+        # Optional: warm emoji cache
         try:
             from src.bot.base_cog import BaseCog
             temp_cog = BaseCog(bot)
@@ -199,20 +172,18 @@ async def on_ready():
         except Exception as e:
             print(f"Emoji cache warmup skipped: {e}")
 
-        # ---- Sync commands once per process ----
+        # Sync once per process
         if not getattr(bot, "_did_initial_sync", False):
-            guild_id = os.getenv("DISCORD_GUILD_ID")
-
-            if guild_id:
-                # Do NOT clear. Copy global cmds into the dev guild, then sync.
-                g = discord.Object(id=int(guild_id))
-                bot.tree.copy_global_to(guild=g)
+            if DEV_GUILD_ID:
+                g = discord.Object(id=int(DEV_GUILD_ID))
+                # Mirror all currently-registered GLOBAL commands into the guild for fast testing
+                bot.tree.clear_commands(guild=g)          # reset local guild view
+                bot.tree.copy_global_to(guild=g)          # copy global -> guild
                 guild_synced = await bot.tree.sync(guild=g)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
             else:
                 global_synced = await bot.tree.sync()
                 print(f"Global sync → {len(global_synced)} commands: {[c.name for c in global_synced]}")
-
             bot._did_initial_sync = True
 
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -226,23 +197,24 @@ async def on_guild_emojis_update(guild, before, after):
     except Exception as e:
         print(f"❌ Failed to refresh emoji cache: {e}")
 
-# ================= Admin: manual sync command (flat) =================
+# ================= Admin: manual sync (no nukes) =================
 @is_admin_or_manager()
 @tree.command(
     name="sync_commands",
-    description="Resync slash commands for this guild (or globally if no guild).",
+    description="Resync slash commands for this guild (or globally if no DISCORD_GUILD_ID).",
     guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0"))),
 )
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        gid_env = os.getenv("DISCORD_GUILD_ID")
-        if gid_env:
-            gobj = discord.Object(id=int(gid_env))
-            tree.clear_commands(guild=gobj)
-            synced = await tree.sync(guild=gobj)
+        if DEV_GUILD_ID:
+            g = discord.Object(id=int(DEV_GUILD_ID))
+            # Rebuild guild view from current global commands, then sync
+            bot.tree.clear_commands(guild=g)
+            bot.tree.copy_global_to(guild=g)
+            synced = await bot.tree.sync(guild=g)
         else:
-            synced = await tree.sync()
+            synced = await bot.tree.sync()
 
         names = [c.name for c in synced]
         print(f"Synced → {len(synced)} commands: {names}")
@@ -254,7 +226,7 @@ async def sync_commands(interaction: discord.Interaction):
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
 
-# ================= Bot health =================
+# ================= Health =================
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency * 1000)}ms`", ephemeral=True)
