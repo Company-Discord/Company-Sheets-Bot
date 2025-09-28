@@ -210,6 +210,11 @@ class CurrencySystem(BaseCog):
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.work_min_percent)
         max_earnings = int(total_balance * settings.work_max_percent)
+        
+        # Ensure min_earnings <= max_earnings to avoid randrange error
+        if min_earnings > max_earnings:
+            min_earnings, max_earnings = max_earnings, min_earnings
+        
         calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
         
         # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
@@ -274,6 +279,11 @@ class CurrencySystem(BaseCog):
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.slut_min_percent)
         max_earnings = int(total_balance * settings.slut_max_percent)
+        
+        # Ensure min_earnings <= max_earnings to avoid randrange error
+        if min_earnings > max_earnings:
+            min_earnings, max_earnings = max_earnings, min_earnings
+        
         calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
         
         # Apply minimum reward: if calculated earnings < 750, award 750-5000 instead
@@ -365,6 +375,11 @@ class CurrencySystem(BaseCog):
         total_balance = user_balance.cash + user_balance.bank
         min_earnings = int(total_balance * settings.crime_min_percent)
         max_earnings = int(total_balance * settings.crime_max_percent)
+        
+        # Ensure min_earnings <= max_earnings to avoid randrange error
+        if min_earnings > max_earnings:
+            min_earnings, max_earnings = max_earnings, min_earnings
+        
         calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
         
         # Apply minimum reward: if calculated earnings < 15000, award 15000-25000 instead
