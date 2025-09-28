@@ -16,7 +16,6 @@ from src.api.engauge_adapter import EngaugeAdapter
 load_dotenv()
 
 TC_EMOJI = os.getenv("TC_EMOJI", "💰")
-
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 if not DISCORD_BOT_TOKEN:
     raise RuntimeError("Missing DISCORD_BOT_TOKEN environment variable.")
@@ -24,11 +23,11 @@ if not DISCORD_BOT_TOKEN:
 if not os.getenv("ENGAUGE_API_TOKEN"):
     print("⚠️  ENGAUGE_API_TOKEN is not set. The predictions extension may fail to load until you set it.")
 
-DEV_GUILD_ID = os.getenv("DISCORD_GUILD_ID")  # guild where you want fast propagation
+DEV_GUILD_ID = os.getenv("DISCORD_GUILD_ID")  # your guild for fast propagation
 
 # ================= Discord bot ==================
 intents = discord.Intents.default()
-intents.members = True  # keep if your cogs read member/role data
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
@@ -49,7 +48,7 @@ async def random_crate_drop_task():
 
     while True:
         try:
-            wait_time = random.randint(3900, 10800)  # 65–180 minutes
+            wait_time = random.randint(3900, 10800)
             print(f"⏰ Next crate drop in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
             print("🎁 Dropping random crate...")
@@ -111,9 +110,9 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading poker_lite: {e}")
 
-    # ---- Load Currency System ----
+    # ---- Load Currency System (FLAT COMMANDS) ----
     try:
-        await bot.load_extension("src.bot.extensions.currency_system") 
+        await bot.load_extension("src.bot.extensions.currency_system")
         print("Loaded currency_system cog ✅")
     except Exception as e:
         print(f"Failed loading currency_system: {e}")
@@ -172,13 +171,10 @@ async def on_ready():
         except Exception as e:
             print(f"Emoji cache warmup skipped: {e}")
 
-        # Sync once per process
+        # Sync once per process — DO NOT clear/copy; just sync
         if not getattr(bot, "_did_initial_sync", False):
             if DEV_GUILD_ID:
                 g = discord.Object(id=int(DEV_GUILD_ID))
-                # Mirror all currently-registered GLOBAL commands into the guild for fast testing
-                bot.tree.clear_commands(guild=g)          # reset local guild view
-                bot.tree.copy_global_to(guild=g)          # copy global -> guild
                 guild_synced = await bot.tree.sync(guild=g)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
             else:
@@ -197,7 +193,7 @@ async def on_guild_emojis_update(guild, before, after):
     except Exception as e:
         print(f"❌ Failed to refresh emoji cache: {e}")
 
-# ================= Admin: manual sync (no nukes) =================
+# ================= Admin: manual sync (no nukes, no clear) =================
 @is_admin_or_manager()
 @tree.command(
     name="sync_commands",
@@ -209,9 +205,6 @@ async def sync_commands(interaction: discord.Interaction):
     try:
         if DEV_GUILD_ID:
             g = discord.Object(id=int(DEV_GUILD_ID))
-            # Rebuild guild view from current global commands, then sync
-            bot.tree.clear_commands(guild=g)
-            bot.tree.copy_global_to(guild=g)
             synced = await bot.tree.sync(guild=g)
         else:
             synced = await bot.tree.sync()
