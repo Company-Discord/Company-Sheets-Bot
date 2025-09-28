@@ -179,6 +179,40 @@ async def setup_hook():
     except Exception as e:
         print(f"Startup /tc registration skipped: {e}")
 
+# --- debug helpers ---
+
+@tree.command(name="debug_cogs", description="List loaded cogs and extensions")
+async def debug_cogs(interaction: discord.Interaction):
+    cogs = list(bot.cogs.keys())
+    exts = list(bot.extensions.keys())
+    msg = (
+        f"**Cogs** ({len(cogs)}): {cogs}\n"
+        f"**Extensions** ({len(exts)}): {list(exts)}"
+    )
+    await interaction.response.send_message(msg, ephemeral=True)
+
+@tree.command(name="load_currency", description="Load/Reload the currency extension")
+async def load_currency(interaction: discord.Interaction):
+    mod = "src.bot.extensions.currency_system"
+    try:
+        if mod in bot.extensions:
+            await bot.reload_extension(mod)
+            action = "Reloaded"
+        else:
+            await bot.load_extension(mod)
+            action = "Loaded"
+        await interaction.response.send_message(f"{action} `{mod}` ✅", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"Failed: `{e}`", ephemeral=True)
+
+@tree.command(name="work_test", description="TEMP — run work without tc group")
+async def work_test(interaction: discord.Interaction):
+    cog = interaction.client.get_cog("CurrencySystem")
+    if not cog:
+        await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
+        return
+    await cog._work_impl(interaction)
+
 @bot.event
 async def on_ready():
     try:
@@ -294,24 +328,6 @@ async def sync_commands(interaction: discord.Interaction):
     except Exception as e:
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
-
-###### DEBUGGING AND LOADING ########
-@tree.command(name="debug_cogs", description="TEMP — list loaded cogs & extensions")
-async def debug_cogs(interaction: discord.Interaction):
-    bot = interaction.client
-    await interaction.response.send_message(
-        f"**Cogs:** {list(bot.cogs.keys())}\n**Extensions:** {list(bot.extensions.keys())}",
-        ephemeral=True,
-    )
-
-@tree.command(name="load_currency", description="TEMP — load CurrencySystem extension")
-async def load_currency(interaction: discord.Interaction):
-    bot = interaction.client
-    try:
-        await bot.load_extension("src.bot.extensions.currency_system")  # <-- your path
-        await interaction.response.send_message("Loaded `src.bot.extensions.currency_system` ✅", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"Load failed: `{e}`", ephemeral=True)
 
 
 # # ===== One-shot NUKE (runs at startup) =====
@@ -500,15 +516,6 @@ async def sync_nuke(interaction: discord.Interaction):
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
-
-@tree.command(name="work_test", description="TEMP — run work without tc group")
-async def work_test(interaction: discord.Interaction):
-    # Call the CurrencySystem cog's internal implementation directly
-    cog = interaction.client.get_cog("CurrencySystem")
-    if not cog:
-        await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
-        return
-    await cog._work_impl(interaction)
 
 # ================= Debug: Inspect remote schema =================
 @is_admin_or_manager()
