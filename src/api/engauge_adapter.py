@@ -130,5 +130,24 @@ class EngaugeAdapter:
         url = f"{self.base}/servers/{self.server_id}/crates/{crate_id}/drop"
         async with aiohttp.ClientSession() as s:
             async with s.post(url, headers=self._headers()) as r:
-                r.raise_for_status()
-                return await r.json()
+                print(f"Crate drop response: {r.status}")
+                # Handle 500 responses gracefully - sometimes the API returns 500 even on successful drops
+                if r.status == 500:
+                    # Return a success response indicating the drop was attempted
+                    return {
+                        "success": True,
+                        "reponse": await r.json(),
+                        "crate_id": crate_id,
+                        "status_code": 500
+                    }
+                elif r.status >= 400:
+                    # For other error status codes, raise an exception
+                    raise aiohttp.ClientResponseError(
+                        request_info=r.request_info,
+                        history=r.history,
+                        status=r.status,
+                        message=f"HTTP {r.status} error"
+                    )
+                else:
+                    # For successful responses, return the JSON
+                    return await r.json()

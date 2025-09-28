@@ -46,18 +46,22 @@ async def random_crate_drop_task():
         print(f"❌ Failed to initialize crate drop system: {e}")
         return
 
+    drop_count = 0
     while True:
         try:
+            drop_count += 1
             # wait_time = random.randint(3900, 10800)
             wait_time = random.randint(30, 60)
-            print(f"⏰ Next crate drop in {wait_time // 60} minutes ({wait_time} seconds)")
+            print(f"⏰ Next crate drop (#{drop_count}) in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
-            print("🎁 Dropping random crate...")
+            print(f"🎁 Dropping random crate (#{drop_count})...")
             result = await adapter.drop_crate()
-            print(f"✅ Crate dropped successfully: {result}")
+            print(f"✅ Crate #{drop_count} dropped successfully: {result}")
         except Exception as e:
-            print(f"❌ Error in crate drop task: {e}")
+            print(f"❌ Error in crate drop task (attempt #{drop_count}): {e}")
+            print("⏳ Waiting 5 minutes before retrying...")
             await asyncio.sleep(300)
+            print("🔄 Retrying crate drop task...")
 
 # ================= Extension loading =================
 @bot.event
