@@ -209,7 +209,7 @@ async def on_ready():
                 bot.tree.add_command(tc, guild=guild)
 
                 # Re-add admin/debug commands
-                for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
+                for cmd in (sync_commands, debug_tc_work, debug_tc_tree, work_test):
                     try:
                         bot.tree.add_command(cmd, guild=guild)
                     except Exception as e:
@@ -495,6 +495,15 @@ async def sync_nuke(interaction: discord.Interaction):
 @tree.command(name="ping", description="Latency check.")
 async def ping(interaction: discord.Interaction):
     await interaction.response.send_message(f"Pong! `{round(bot.latency*1000)}ms`", ephemeral=True)
+
+@tree.command(name="work_test", description="TEMP — run work without tc group")
+async def work_test(interaction: discord.Interaction):
+    # Call the CurrencySystem cog's internal implementation directly
+    cog = interaction.client.get_cog("CurrencySystem")
+    if not cog:
+        await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
+        return
+    await cog._work_impl(interaction)
 
 # ================= Debug: Inspect remote schema =================
 @is_admin_or_manager()
