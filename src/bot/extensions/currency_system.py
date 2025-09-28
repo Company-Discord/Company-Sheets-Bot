@@ -1276,11 +1276,15 @@ class CurrencySystem(BaseCog):
         
         await interaction.response.send_message(embed=embed)
 
-    # ---- Public /tc work (wrapper) ----
+    from src.bot.command_groups import tc
+
     @tc.command(name="work", description="Earn money through legitimate work")
-    # @is_admin_or_manager()  # optional; keep or remove based on who should use it
-    async def work(self, interaction: discord.Interaction):
-        await self._work_impl(interaction)
+    async def work(interaction: discord.Interaction):
+        cog = interaction.client.get_cog("CurrencySystem")
+        if not cog:
+            await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
+            return
+        await cog._work_impl(interaction)
 
 
 # ================= Setup Function =================
