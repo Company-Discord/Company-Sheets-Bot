@@ -134,9 +134,17 @@ class EngaugeAdapter:
                 # Handle 500 responses gracefully - sometimes the API returns 500 even on successful drops
                 if r.status == 500:
                     # Return a success response indicating the drop was attempted
+                    # Try to get response content, but don't fail if it's not JSON
+                    try:
+                        response_content = await r.json()
+                    except Exception:
+                        # If JSON parsing fails, get text content instead
+                        response_content = await r.text()
+                    
                     return {
                         "success": True,
-                        "reponse": await r.json(),
+                        "message": "Crate drop attempted (API returned 500 but operation may have succeeded)",
+                        "response": response_content,
                         "crate_id": crate_id,
                         "status_code": 500
                     }
@@ -149,5 +157,16 @@ class EngaugeAdapter:
                         message=f"HTTP {r.status} error"
                     )
                 else:
-                    # For successful responses, return the JSON
-                    return await r.json()
+                    # For successful responses, try to parse JSON, but handle parsing errors gracefully
+                    try:
+                        return await r.json()
+                    except Exception as json_error:
+                        # If JSON parsing fails, return a success response with the raw content
+                        text_content = await r.text()
+                        return {
+                            "success": True,
+                            "message": f"Response received but JSON parsing failed: {json_error}",
+                            "raw_content": text_content[:200] if text_content else "No content",
+                            "crate_id": crate_id,
+                            "status_code": r.status
+                        }
