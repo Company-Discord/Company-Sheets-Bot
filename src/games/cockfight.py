@@ -11,7 +11,7 @@ from typing import Optional
 
 import discord
 from discord import app_commands
-from src.bot.command_groups import games
+# Command groups removed - all commands are now flat
 from discord.ext import commands
 
 from src.bot.base_cog import BaseCog
@@ -109,9 +109,9 @@ class CockfightCog(BaseCog):
         return BASE_WIN_PERCENT + (streak * 1.0)  # +1% per streak
 
     @is_admin_or_manager()
-    @games.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
-    @app_commands.describe(bet="Amount to bet (positive integer, taken from your custom currency cash)")
-    async def cockfight(self, interaction: discord.Interaction, bet: int):
+    @app_commands.command(name="cockfight", description="Bet on a cockfight. Win doubles your bet.")
+    @app_commands.describe(bet="Amount to bet (positive integer, or 'all' to bet your entire cash balance)")
+    async def cockfight(self, interaction: discord.Interaction, bet: str):
         """Cockfight betting command."""
         user_id = interaction.user.id
         guild_id = interaction.guild.id
@@ -124,10 +124,25 @@ class CockfightCog(BaseCog):
             )
             return
 
-        await self._handle_bet(interaction, interaction.user, bet)
+        # Handle "all" bet option
+        if bet.lower() == "all":
+            # Get user's cash balance
+            bal = await self.get_user_balance(user_id, guild_id)
+            if bal.cash <= 0:
+                return await interaction.response.send_message("You don't have any cash to bet.", ephemeral=True)
+            
+            bet_amount = bal.cash
+        else:
+            # Try to parse as integer
+            try:
+                bet_amount = int(bet)
+            except ValueError:
+                return await interaction.response.send_message("Invalid bet amount. Use a number or 'all'.", ephemeral=True)
+
+        await self._handle_bet(interaction, interaction.user, bet_amount)
 
     @is_admin_or_manager()
-    @games.command(name="cockstats", description="Show your cockfight streak & current win chance.")
+    @app_commands.command(name="cockstats", description="Show your cockfight streak & current win chance.")
     async def cockstats(self, interaction: discord.Interaction):
         """Show cockfight statistics."""
         await interaction.response.defer(ephemeral=True)

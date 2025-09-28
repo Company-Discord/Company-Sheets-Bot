@@ -5,7 +5,7 @@ import aiohttp
 import discord
 from discord.ext import commands
 from discord import app_commands
-from src.bot.command_groups import fun
+# Command groups removed - all commands are now flat
 from typing import Any, Optional, Dict
 from src.bot.base_cog import BaseCog
 
@@ -223,7 +223,7 @@ class Fun(BaseCog):
         return None
 
     # ============================ Dog ============================
-    @fun.command(name="dog", description="Send a random dog image")
+    @app_commands.command(name="dog", description="Send a random dog image")
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
     async def dog(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
@@ -255,7 +255,7 @@ class Fun(BaseCog):
             )
 
     # ============================ Bunny ============================
-    @fun.command(name="bunny", description="Send a random bunny image")
+    @app_commands.command(name="bunny", description="Send a random bunny image")
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
     async def bunny(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
@@ -287,7 +287,7 @@ class Fun(BaseCog):
                 ephemeral=True
             )
     # ============================ Cat ============================
-    @fun.command(name="cat", description="Send a random cat image")
+    @app_commands.command(name="cat", description="Send a random cat image")
     @app_commands.checks.cooldown(1, 3.0, key=lambda i: (i.user.id))
     async def cat(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)

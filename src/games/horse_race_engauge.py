@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
-from src.bot.command_groups import games
+# Command groups removed - all commands are now flat
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -243,7 +243,7 @@ class HorseRace(BaseCog):
         return "```\n" + "\n".join(lines) + "\n```"
 
     # ---- Commands ----
-    @games.command(name="race", description="Start a horse race betting lobby.")
+    @app_commands.command(name="race", description="Start a horse race betting lobby.")
     @is_admin_or_manager()
     @app_commands.describe(
         bet_window="Seconds betting stays open (default 60).",
@@ -293,7 +293,7 @@ class HorseRace(BaseCog):
             await self.start_race(interaction)
 
     # Bet by NAME (with autocomplete)
-    @games.command(name="bet", description="Place a bet by horse NAME for the current race.")
+    @app_commands.command(name="bet", description="Place a bet by horse NAME for the current race.")
     @is_admin_or_manager()
     @app_commands.describe(horse="Horse name", amount="Bet amount")
     async def bet_cmd(self, interaction: discord.Interaction, horse: str, amount: int):

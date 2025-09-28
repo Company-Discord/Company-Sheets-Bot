@@ -8,17 +8,17 @@ from typing import Optional, Dict
 
 import discord
 from discord import app_commands
-from src.bot.command_groups import games
+# Command groups removed - all commands are now flat
 from discord.ext import commands
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
 
-CURRENCY_EMOTE = os.getenv("CURRENCY_EMOTE", ":TC:")
+TC_EMOJI = os.getenv("TC_EMOJI", ":TC:")
 MAX_BET = int(os.getenv("HL_MAX_BET", "300000"))  
 
 def fmt_tc(n: int) -> str:
-    return f"{CURRENCY_EMOTE} {n:,}"
+    return f"{TC_EMOJI} {n:,}"
 
 @dataclass
 class HLState:
@@ -152,10 +152,10 @@ class HighLow(BaseCog):
     def _locked(self, user_id: int) -> Optional[str]:
         return "You already have a High/Low game in progress." if user_id in self.active else None
 
-    @games.command(name="highlow", description="Play High/Low (1–100). Bet before seeing the number.")
-    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE} (max {MAX_BET:,})")
+    @app_commands.command(name="highlow", description="Play High/Low (1–100). Bet before seeing the number.")
+    @app_commands.describe(bet=f"Bet amount in TC (max {MAX_BET:,}, or 'all' to bet your entire cash balance)")
     @is_admin_or_manager()
-    async def highlow_cmd(self, interaction: discord.Interaction, bet: int):
+    async def highlow_cmd(self, interaction: discord.Interaction, bet: str):
         if interaction.guild_id is None:
             return await interaction.response.send_message("Server-only command.", ephemeral=True)
 
@@ -164,22 +164,37 @@ class HighLow(BaseCog):
         if msg:
             return await interaction.response.send_message(msg, ephemeral=True)
 
+        # Handle "all" bet option
+        if bet.lower() == "all":
+            # Get user's cash balance
+            bal = await self.get_user_balance(interaction.user.id, interaction.guild_id)
+            if bal.cash <= 0:
+                return await interaction.response.send_message("You don't have any cash to bet.", ephemeral=True)
+            
+            bet_amount = bal.cash
+        else:
+            # Try to parse as integer
+            try:
+                bet_amount = int(bet)
+            except ValueError:
+                return await interaction.response.send_message("Invalid bet amount. Use a number or 'all'.", ephemeral=True)
+
         # Validate bet
-        if bet <= 0 or bet > MAX_BET:
+        if bet_amount <= 0 or bet_amount > MAX_BET:
             return await interaction.response.send_message(
                 f"Invalid bet. Min 1, max {fmt_tc(MAX_BET)}.", ephemeral=True
             )
 
         # Balance check & escrow
         bal = await self.get_user_balance(interaction.user.id, interaction.guild_id)
-        if bal.cash < bet:
+        if bal.cash < bet_amount:
             settings = await self.get_guild_settings(interaction.guild_id)
             return await interaction.response.send_message(
                 f"Not enough cash. You have {self.format_currency(bal.cash, settings.currency_symbol)}.",
                 ephemeral=True
             )
 
-        ok = await self.deduct_cash(interaction.user.id, interaction.guild_id, bet, "HighLow bet escrow")
+        ok = await self.deduct_cash(interaction.user.id, interaction.guild_id, bet_amount, "HighLow bet escrow")
         if not ok:
             return await interaction.response.send_message("Failed to place bet.", ephemeral=True)
 
@@ -188,14 +203,14 @@ class HighLow(BaseCog):
         st = HLState(
             user_id=interaction.user.id,
             guild_id=interaction.guild_id,
-            bet=bet,
+            bet=bet_amount,
             x=x
         )
 
         emb = discord.Embed(title="High / Low — Make your call", color=discord.Color.blurple())
         emb.add_field(name="Starting Number", value=f"**{x}**", inline=True)
-        emb.add_field(name="Bet", value=fmt_tc(bet), inline=True)
-        emb.add_field(name="Payout", value=f"Win: {fmt_tc(bet*2)} • Tie: refund", inline=False)
+        emb.add_field(name="Bet", value=fmt_tc(bet_amount), inline=True)
+        emb.add_field(name="Payout", value=f"Win: {fmt_tc(bet_amount*2)} • Tie: refund", inline=False)
         emb.set_footer(text="You have 60s to choose Higher or Lower.")
 
         view = HLView(self, st, timeout=60)
@@ -205,10 +220,10 @@ class HighLow(BaseCog):
         self.active[st.user_id] = st
 
     # Short alias
-    @games.command(name="hl", description="Alias of /highlow")
-    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE} (max {MAX_BET:,})")
+    @app_commands.command(name="hl", description="Alias of /highlow")
+    @app_commands.describe(bet=f"Bet amount in TC (max {MAX_BET:,}, or 'all' to bet your entire cash balance)")
     @is_admin_or_manager()
-    async def hl_alias(self, interaction: discord.Interaction, bet: int):
+    async def hl_alias(self, interaction: discord.Interaction, bet: str):
         await self.highlow_cmd.callback(self, interaction, bet)  # type: ignore
 
 async def setup(bot: commands.Bot):

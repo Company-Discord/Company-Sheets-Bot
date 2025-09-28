@@ -5,7 +5,7 @@ from typing import List, Tuple, Dict, Optional
 
 import discord
 from discord import app_commands
-from src.bot.command_groups import games
+# Command groups removed - all commands are now flat
 from discord.ext import commands
 
 # ---- shared infra ----
@@ -427,18 +427,36 @@ class BlackjackV2(BaseCog):
         view.message = player_msg
 
     # ---------- /blackjack ----------
-    @games.command(name="blackjackv2", description="Play Blackjack with your balance.")
+    @app_commands.command(name="blackjackv2", description="Play Blackjack with your balance.")
     @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
     @is_admin_or_manager()
     async def blackjack(self, interaction: discord.Interaction, bet: int):
         await self._start_blackjack(interaction, bet)
 
     # ---------- /bj (alias) ----------
-    @games.command(name="bjv2", description="Play Blackjack (shortcut).")
-    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE}")
+    @app_commands.command(name="bjv2", description="Play Blackjack (shortcut).")
+    @app_commands.describe(bet=f"Bet amount in {CURRENCY_EMOTE} (or 'all' to bet your entire cash balance)")
     @is_admin_or_manager()
-    async def blackjack_alias(self, interaction: discord.Interaction, bet: int):
-        await self._start_blackjack(interaction, bet)
+    async def blackjack_alias(self, interaction: discord.Interaction, bet: str):
+        # Handle "all" bet option
+        if bet.lower() == "all":
+            if interaction.guild_id is None:
+                return await interaction.response.send_message("Use this in a server.", ephemeral=True)
+            
+            # Get user's cash balance
+            bal = await self.get_user_balance(interaction.user.id, interaction.guild_id)
+            if bal.cash <= 0:
+                return await interaction.response.send_message("You don't have any cash to bet.", ephemeral=True)
+            
+            bet_amount = bal.cash
+        else:
+            # Try to parse as integer
+            try:
+                bet_amount = int(bet)
+            except ValueError:
+                return await interaction.response.send_message("Invalid bet amount. Use a number or 'all'.", ephemeral=True)
+        
+        await self._start_blackjack(interaction, bet_amount)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BlackjackV2(bot))

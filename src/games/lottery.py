@@ -104,7 +104,7 @@ class WeeklyLottery(BaseCog):
     Tickets are earned from net-positive gambling winnings (via 'gamble_winnings' events).
     """
 
-    group = app_commands.Group(name="wlottery", description="Weekly Lottery (tickets from gambling wins)", parent=tc)
+    # Command group removed - all commands are now flat
 
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
@@ -369,6 +369,12 @@ class WeeklyLottery(BaseCog):
                 else:
                     # Not enough unique entrants — put this share into rollover immediately
                     await self._rollover_add(guild_id, share)
+            
+            # Clear all tickets for this week after winners have been picked
+            await conn.execute(
+                "UPDATE wlottery_entries SET tickets = 0 WHERE week_id = $1",
+                wid
+            )
 
         # Announce results (no auto-pay)
         if chan:
@@ -410,7 +416,7 @@ class WeeklyLottery(BaseCog):
 
     # -------------------- Slash Commands --------------------
 
-    @group.command(name="info", description="Show this week's pot, draw time, and total tickets.")
+    @app_commands.command(name="wlottery-info", description="Show this week's pot, draw time, and total tickets.")
     async def info(self, inter: discord.Interaction):
         wid, window, _ = await self._current_week(inter.guild_id)
         pot = await self._compute_pot(wid)
@@ -437,7 +443,7 @@ class WeeklyLottery(BaseCog):
         emb.set_footer(text=f"Tickets: 1 per {fmt_tc(WLOTTERY_EARN_PER_TICKET)} (max {WLOTTERY_MAX_TICKETS_PER_USER})")
         await inter.response.send_message(embed=emb, ephemeral=True)
 
-    @group.command(name="mytickets", description="See your tickets and progress toward the next ticket.")
+    @app_commands.command(name="wlottery-mytickets", description="See your tickets and progress toward the next ticket.")
     async def mytickets(self, inter: discord.Interaction):
         wid, _, _ = await self._current_week(inter.guild_id)
         async with self.db._pool.acquire() as conn:
@@ -461,7 +467,7 @@ class WeeklyLottery(BaseCog):
             ephemeral=True
         )
 
-    @group.command(name="claim", description="Claim your pending weekly lottery prize (if any).")
+    @app_commands.command(name="wlottery-claim", description="Claim your pending weekly lottery prize (if any).")
     async def claim(self, inter: discord.Interaction):
         now_ts = int(_now().timestamp())
         async with self.db._pool.acquire() as conn:
@@ -509,7 +515,7 @@ class WeeklyLottery(BaseCog):
             f"Use your `/deposit` command if you’d like to move it to bank."
         )
 
-    @group.command(name="winners", description="Show the latest winners & claim deadlines.")
+    @app_commands.command(name="wlottery-winners", description="Show the latest winners & claim deadlines.")
     async def winners_cmd(self, inter: discord.Interaction):
         wid, window, _ = await self._current_week(inter.guild_id)
         # show winners from the most recent completed week (might be the current week if just drawn)
@@ -544,7 +550,7 @@ class WeeklyLottery(BaseCog):
             ephemeral=True
         )
 
-    @group.command(name="force_draw", description="(Admin) Force this week's draw now (creates claimable prizes).")
+    @app_commands.command(name="wlottery-force-draw", description="(Admin) Force this week's draw now (creates claimable prizes).")
     @app_commands.default_permissions(administrator=True)
     async def force_draw(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
@@ -552,7 +558,7 @@ class WeeklyLottery(BaseCog):
             await self._run_draw_for_guild(inter.guild_id, announce_channel=inter.channel)
         await inter.followup.send("Forced weekly draw executed.", ephemeral=True)
 
-    @group.command(name="storage", description="(Admin) Show weekly lottery storage stats.")
+    @app_commands.command(name="wlottery-storage", description="(Admin) Show weekly lottery storage stats.")
     @app_commands.default_permissions(administrator=True)
     async def storage(self, inter: discord.Interaction):
         wid, _, _ = await self._current_week(inter.guild_id)

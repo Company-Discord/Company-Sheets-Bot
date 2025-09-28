@@ -9,7 +9,7 @@ from typing import List, Tuple, Dict, Optional
 
 import discord
 from discord import app_commands
-from src.bot.command_groups import games
+# Command groups removed - all commands are now flat
 from discord.ext import commands
 
 # =================== Import Unified Database ===================
@@ -578,8 +578,8 @@ class PokerLite(BaseCog):
         self.active_by_user.pop(user_id, None)
 
     # ----- Commands -----
-    @games.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
-    @app_commands.describe(bet=f"Bet amount in {TC_EMOJI}")
+    @app_commands.command(name="poker", description="Play Poker-Lite (5-card draw vs dealer).")
+    @app_commands.describe(bet=f"Bet amount in TC")
     @is_admin_or_manager()
     async def poker(self, interaction: discord.Interaction, bet: int):
         """Main game command — bet is required, no max, must be > 0."""
@@ -663,7 +663,7 @@ class PokerLite(BaseCog):
         finally:
             self._unlock(user.id)
 
-    @games.command(name="poker_stats", description="Show Poker-Lite lifetime stats for you or another user.")
+    @app_commands.command(name="poker-stats", description="Show Poker-Lite lifetime stats for you or another user.")
     @app_commands.describe(user="User to inspect (defaults to you)")
     @is_admin_or_manager()
     async def poker_stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
@@ -705,7 +705,7 @@ class PokerLite(BaseCog):
         emb.add_field(name="Avg Bet", value=fmt_tc(int(avg_bet)), inline=True)
         await interaction.response.send_message(embed=emb, ephemeral=False)
 
-    @games.command(name="poker_leaderboard", description="Show the Poker-Lite leaderboard for this server.")
+    @app_commands.command(name="poker-leaderboard", description="Show the Poker-Lite leaderboard for this server.")
     @app_commands.describe(
         metric="Rank by 'net' (profit) or 'wins' (default: net)",
         limit="Number of players to show (1–25, default 10)"

@@ -3,7 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from src.bot.command_groups import pred
+# Command groups removed - all commands are now flat
 from datetime import datetime
 
 from src.bot.base_cog import BaseCog
@@ -322,7 +322,7 @@ class Predictions(BaseCog):
         return feedback_embed
 
     # ---------- Slash commands ----------
-    @pred.command(name="start", description="(Admin/Techie) Start a new prediction")
+    @app_commands.command(name="prediction-start", description="(Admin/Techie) Start a new prediction")
     @is_admin_or_manager()
     async def start(
         self,
@@ -346,7 +346,7 @@ class Predictions(BaseCog):
         await self.update_embed(inter.guild_id)
 
 
-    @pred.command(name="resolve", description="(Admin/Techie) Resolve and pay out a prediction")
+    @app_commands.command(name="prediction-resolve", description="(Admin/Techie) Resolve and pay out a prediction")
     @is_admin_or_manager()
     async def resolve(self, inter: discord.Interaction, winner: str):
         winner = winner.upper()
@@ -374,7 +374,7 @@ class Predictions(BaseCog):
         # Update the existing embed with the resolution message
         await self.update_embed(inter.guild_id, content=msg)
 
-    @pred.command(name="cancel", description="(Admin/Techie) Cancel the current prediction and refund all")
+    @app_commands.command(name="prediction-cancel", description="(Admin/Techie) Cancel the current prediction and refund all")
     @is_admin_or_manager()
     async def cancel(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
@@ -390,7 +390,7 @@ class Predictions(BaseCog):
         # Update the existing embed with the cancellation message
         await self.update_embed(inter.guild_id, content="Prediction canceled and refunded.")
 
-    @pred.command(name="status", description="Show the current prediction status")
+    @app_commands.command(name="prediction-status", description="Show the current prediction status")
     @is_admin_or_manager()
     async def status(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)

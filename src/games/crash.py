@@ -21,10 +21,6 @@ from src.utils.utils import is_admin_or_manager
 # Currency emoji constant
 TC_EMOJI = os.getenv('TC_EMOJI', '💰')
 
-CURRENCY_ICON = os.getenv("CURRENCY_EMOTE") 
-if not CURRENCY_ICON:
-    raise RuntimeError("CURRENCY_EMOTE must be set in your .env ")
-
 # Game tuning
 TICK_SECONDS = float(os.getenv("TICK_SECONDS", "0.1"))  # Default: 0.1 seconds per tick
 GROWTH_PER_TICK = float(os.getenv("GROWTH_PER_TICK", "0.02"))  # Default: 2% growth per tick
@@ -106,7 +102,7 @@ class CrashView(discord.ui.View):
         b.cashed_out = True
         b.payout = payout
         await inter.response.send_message(
-            f"✅ Cashed out at **{self.cog._format_mult(rs.current_mult)}** → {CURRENCY_ICON} {payout:,}",
+            f"✅ Cashed out at **{self.cog._format_mult(rs.current_mult)}** → {TC_EMOJI} {payout:,}",
             ephemeral=True
         )
         await self.cog._refresh_embed(self.guild_id)
@@ -183,8 +179,8 @@ class Crash(BaseCog):
         desc = (
             f"{top}\n"
             f"👥 **Bettors:** {bettors}\n"
-            f"{TC_EMOJI} **Active Pool:** {CURRENCY_ICON} {pool:,}\n"
-            f"💸 **Paid so far:** {CURRENCY_ICON} {winners_pool:,}\n"
+            f"{TC_EMOJI} **Active Pool:** {TC_EMOJI} {pool:,}\n"
+            f"💸 **Paid so far:** {TC_EMOJI} {winners_pool:,}\n"
             f"🧷 **Auto-cashout set:** {a_count}\n\n"
             f"Use **/crash bet** during betting, and **/crash cashout** while flying."
         )
@@ -212,7 +208,7 @@ class Crash(BaseCog):
                     status = f"{TC_EMOJI} cashed" if b.cashed_out else "⏳ live"
                     ac = f" · auto {b.auto_cashout:.2f}×" if b.auto_cashout else ""
                     val = b.payout if b.cashed_out else b.amount
-                lines.append(f"• **{name}** — {status}{ac} — {CURRENCY_ICON} {val:,}")
+                lines.append(f"• **{name}** — {status}{ac} — {TC_EMOJI} {val:,}")
             emb.add_field(name="Players", value="\n".join(lines), inline=False)
 
         if footer:
@@ -288,9 +284,9 @@ class Crash(BaseCog):
 
     # -------- Commands --------
 
-    group = app_commands.Group(name="crash", description="Crash gambling game", parent=tc)
+    # Command group removed - all commands are now flat
 
-    @group.command(name="start", description="Start a crash round (opens betting)")
+    @app_commands.command(name="crash-start", description="Start a crash round (opens betting)")
     @is_admin_or_manager()
     @app_commands.describe(open_seconds="How long to accept bets before launch")
     async def start(self, inter: discord.Interaction, open_seconds: app_commands.Range[int, 5, 120] = 20):
@@ -331,16 +327,16 @@ class Crash(BaseCog):
 
         await inter.followup.send(f"Crash round opened for **{open_seconds}s**. Bets are live!", ephemeral=True)
 
-    @group.command(name="bet", description="Place a bet (optionally set auto-cashout)")
+    @app_commands.command(name="crash-bet", description="Place a bet (optionally set auto-cashout)")
     @is_admin_or_manager()
     @app_commands.describe(
-        amount="Amount of currency to bet (integer)",
+        amount="Amount of currency to bet (integer, or 'all' to bet your entire cash balance)",
         auto_cashout="Auto-cashout at this multiplier (e.g., 1.50). Leave empty to cash manually."
     )
     async def bet(
         self,
         inter: discord.Interaction,
-        amount: app_commands.Range[int, 1, 10_000_000],
+        amount: str,
         auto_cashout: Optional[app_commands.Range[float, 1.01, 1000.0]] = None
     ):
         await inter.response.defer(ephemeral=True)
@@ -348,35 +344,52 @@ class Crash(BaseCog):
         if rs.status != "betting":
             return await inter.followup.send("Betting is closed. Wait for the next round.", ephemeral=True)
 
+        # Handle "all" bet option
+        if amount.lower() == "all":
+            # Get user's cash balance
+            user_balance = await self.get_user_balance(inter.user.id, inter.guild_id)
+            if user_balance.cash <= 0:
+                return await inter.followup.send("You don't have any cash to bet.", ephemeral=True)
+            
+            bet_amount = user_balance.cash
+        else:
+            # Try to parse as integer
+            try:
+                bet_amount = int(amount)
+                if bet_amount < 1 or bet_amount > 10_000_000:
+                    return await inter.followup.send("Invalid bet amount. Use a number between 1 and 10,000,000 or 'all'.", ephemeral=True)
+            except ValueError:
+                return await inter.followup.send("Invalid bet amount. Use a number or 'all'.", ephemeral=True)
+
         # single active bet (rebuy replaces: refund old → debit new)
         existing = rs.bets.get(inter.user.id)
         try:
             user_balance = await self.get_user_balance(inter.user.id, inter.guild_id)
-            if user_balance.cash < amount:
+            if user_balance.cash < bet_amount:
                 return await inter.followup.send("You don't have enough currency for this bet.", ephemeral=True)
             
             if existing:
                 await self.add_cash(inter.user.id, inter.guild_id, existing.amount, "Crash bet replace refund")
             
-            if not await self.deduct_cash(inter.user.id, inter.guild_id, amount, "Crash bet stake"):
+            if not await self.deduct_cash(inter.user.id, inter.guild_id, bet_amount, "Crash bet stake"):
                 return await inter.followup.send("❌ You don't have enough currency for this bet.", ephemeral=True)
         except Exception as e:
             return await inter.followup.send(f"⚠️ Error processing bet: {e}", ephemeral=True)
 
         rs.bets[inter.user.id] = Bet(
             user_id=inter.user.id,
-            amount=int(amount),
+            amount=int(bet_amount),
             auto_cashout=float(auto_cashout) if auto_cashout else None
         )
 
         ac_txt = f" with auto-cashout at **{auto_cashout:.2f}×**" if auto_cashout else ""
         await inter.followup.send(
-            f"Bet placed for **{CURRENCY_ICON} {amount:,}**{ac_txt}. Good luck! 🚀",
+            f"Bet placed for **{TC_EMOJI} {bet_amount:,}**{ac_txt}. Good luck! 🚀",
             ephemeral=True
         )
         await self._refresh_embed(inter.guild_id)
 
-    @group.command(name="cashout", description="Cash out your active bet (during flight)")
+    @app_commands.command(name="crash-cashout", description="Cash out your active bet (during flight)")
     @is_admin_or_manager()
     async def cashout(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
@@ -404,12 +417,12 @@ class Crash(BaseCog):
         b.cashed_out = True
         b.payout = payout
         await inter.followup.send(
-            f"✅ Cashed out at **{self._format_mult(rs.current_mult)}** → {CURRENCY_ICON} {payout:,}",
+            f"✅ Cashed out at **{self._format_mult(rs.current_mult)}** → {TC_EMOJI} {payout:,}",
             ephemeral=True
         )
         await self._refresh_embed(inter.guild_id)
 
-    @group.command(name="cancel", description="Cancel current crash round and refund live stakes")
+    @app_commands.command(name="crash-cancel", description="Cancel current crash round and refund live stakes")
     @is_admin_or_manager()
     async def cancel(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)
@@ -433,7 +446,7 @@ class Crash(BaseCog):
             ch, _ = chmsg
             await ch.send("❌ Crash round canceled — all active stakes refunded.")
 
-    @group.command(name="status", description="Show current crash round status")
+    @app_commands.command(name="crash-status", description="Show current crash round status")
     @is_admin_or_manager()
     async def status(self, inter: discord.Interaction):
         await inter.response.defer(ephemeral=True)

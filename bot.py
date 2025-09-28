@@ -48,7 +48,8 @@ async def random_crate_drop_task():
 
     while True:
         try:
-            wait_time = random.randint(3900, 10800)
+            # wait_time = random.randint(3900, 10800)
+            wait_time = random.randint(30, 60)
             print(f"⏰ Next crate drop in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
             print("🎁 Dropping random crate...")
@@ -61,6 +62,8 @@ async def random_crate_drop_task():
 # ================= Extension loading =================
 @bot.event
 async def setup_hook():
+    # ---- Command groups removed - all commands are now flat ----
+    
     # ---- Load Duel Royale ----
     try:
         await bot.load_extension("src.games.duel_royale")
@@ -152,6 +155,8 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading blackjack_v2: {e}")
 
+    # ---- Game-specific command groups removed - all commands are now flat ----
+
     # ---- Start Crate Drop Task ----
     try:
         asyncio.create_task(random_crate_drop_task())
@@ -173,13 +178,16 @@ async def on_ready():
 
         # Sync once per process — DO NOT clear/copy; just sync
         if not getattr(bot, "_did_initial_sync", False):
+            # Always sync globally first
+            global_synced = await bot.tree.sync()
+            print(f"Global sync → {len(global_synced)} commands: {[c.name for c in global_synced]}")
+            
+            # If DEV_GUILD_ID is set, also sync to the specific guild
             if DEV_GUILD_ID:
                 g = discord.Object(id=int(DEV_GUILD_ID))
                 guild_synced = await bot.tree.sync(guild=g)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
-            else:
-                global_synced = await bot.tree.sync()
-                print(f"Global sync → {len(global_synced)} commands: {[c.name for c in global_synced]}")
+            
             bot._did_initial_sync = True
 
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -197,22 +205,29 @@ async def on_guild_emojis_update(guild, before, after):
 @is_admin_or_manager()
 @tree.command(
     name="sync_commands",
-    description="Resync slash commands for this guild (or globally if no DISCORD_GUILD_ID).",
+    description="Resync slash commands globally and to guild (if DEV_GUILD_ID is set).",
     guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0"))),
 )
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
+        # Always sync globally first
+        global_synced = await bot.tree.sync()
+        global_names = [c.name for c in global_synced]
+        print(f"Global sync → {len(global_synced)} commands: {global_names}")
+        
+        response_parts = [f"✅ Global sync: **{len(global_synced)}** commands"]
+        
+        # If DEV_GUILD_ID is set, also sync to the specific guild
         if DEV_GUILD_ID:
             g = discord.Object(id=int(DEV_GUILD_ID))
-            synced = await bot.tree.sync(guild=g)
-        else:
-            synced = await bot.tree.sync()
-
-        names = [c.name for c in synced]
-        print(f"Synced → {len(synced)} commands: {names}")
+            guild_synced = await bot.tree.sync(guild=g)
+            guild_names = [c.name for c in guild_synced]
+            print(f"Guild sync → {len(guild_synced)} commands: {guild_names}")
+            response_parts.append(f"✅ Guild sync: **{len(guild_synced)}** commands")
+        
         await interaction.followup.send(
-            f"✅ Synced **{len(synced)}** commands: `{', '.join(names)}`",
+            "\n".join(response_parts),
             ephemeral=True,
         )
     except Exception as e:
