@@ -244,17 +244,26 @@ async def on_guild_emojis_update(guild, before, after):
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        # Reload all currently loaded extensions (safe & future-proof)
+        # Reset the shared /tc group to avoid duplicate registrations during reload
+        import importlib
+        import src.bot.command_groups as cg
+        cg = importlib.reload(cg)
+
+        # Fully unload then load extensions (avoids CommandAlreadyRegistered)
         reloaded = []
         for ext_path in list(bot.extensions.keys()):
             try:
-                await bot.reload_extension(ext_path)
+                await bot.unload_extension(ext_path)
+            except Exception as e:
+                print(f"Unload warning {ext_path}: {e}")
+            try:
+                await bot.load_extension(ext_path)
                 reloaded.append(ext_path)
             except Exception as e:
-                print(f"Failed to reload {ext_path}: {e}")
+                print(f"Load failed {ext_path}: {e}")
 
         if reloaded:
-            print(f"Reloaded extensions:\n- " + "\n- ".join(reloaded))
+            print("Reloaded extensions:\n- " + "\n- ".join(reloaded))
 
         # Guild sync (hard reset > re-add > sync)
         guild_id = os.getenv("DISCORD_GUILD_ID")
