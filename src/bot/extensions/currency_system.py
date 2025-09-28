@@ -181,9 +181,9 @@ class CurrencySystem(BaseCog):
     # Use centrally defined admin subgroup (under /tc)
     
     # ================= Work Command =================
-    @tc.command(name="work2", description="Earn money through legitimate work")
-    @is_admin_or_manager()
-    async def work(self, interaction: discord.Interaction):
+
+    # internal implementation (called by the public slash callback below)
+    async def _work_impl(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
         # Temporary minimal body to diagnose CommandSignatureMismatch vs TypeError in body
         # await interaction.response.send_message("ok", ephemeral=True)
@@ -1276,6 +1276,15 @@ class CurrencySystem(BaseCog):
         
         await interaction.response.send_message(embed=embed)
 
+    # ---- Public /tc work (wrapper) ----
+    @tc.command(name="work", description="Earn money through legitimate work")
+    @is_admin_or_manager()
+    async def work(interaction: discord.Interaction):
+        cog = interaction.client.get_cog("CurrencySystem")
+        if not cog:
+            await interaction.response.send_message("Currency system is not loaded.", ephemeral=True)
+            return
+        await cog._work_impl(interaction)
 
 # ================= Setup Function =================
 async def setup(bot: commands.Bot):
