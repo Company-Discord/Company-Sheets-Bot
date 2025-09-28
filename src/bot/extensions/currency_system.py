@@ -308,33 +308,31 @@ class CurrencySystem(BaseCog):
                 color=discord.Color.green()
             )
         else:
-            # Failure - lose money and get penalty
-            penalty = int(potential_earnings * 0.25)  # Lose 25% of potential earnings
-            current_balance = await self.get_user_balance(user_id, guild_id)
-            actual_loss = min(penalty, current_balance.cash)  # Can't go below 0
-            
-            if actual_loss > 0:
-                await self.db.update_user_balance(
-                    user_id, guild_id,
-                    cash_delta=-actual_loss,
-                    total_spent_delta=actual_loss,
-                    last_slut=datetime.now(pytz.timezone('America/New_York'))
-                )
-            
-            await self.log_transaction(
-                user_id, guild_id, -actual_loss, "slut", success=False,
-                reason=f"Failed slut activity, lost {actual_loss}"
+            # Failure — lose money by % of potential earnings
+            # Apply FULL penalty to CASH ONLY (cash may go negative). Do not touch bank.
+            loss_pct = getattr(settings, "slut_loss_percent", 0.25)  # default 25%
+            penalty = max(1, int(potential_earnings * loss_pct))
+
+            await self.db.update_user_balance(
+                user_id, guild_id,
+                cash_delta = -penalty,                    # cash can go below 0
+                bank_delta = 0,                           # never auto-deduct bank
+                total_spent_delta = penalty,
+                last_slut = datetime.now(pytz.timezone("America/New_York")),
             )
-            
-            # Get random failure quip
+
+            await self.log_transaction(
+                user_id, guild_id, -penalty, "slut", success=False,
+                reason=f"Failed slut activity, lost {penalty} (cash only; cash may be negative)"
+            )
+
             failure_quip = random.choice(self.slut_quips["failure"])
-            
             embed = discord.Embed(
                 title="💔 Slut Activity Failed!",
-                description=f"{failure_quip}\n\nYou lost {self.format_currency(actual_loss, settings.currency_symbol)}!",
+                description=f"{failure_quip}\n\nYou lost {self.format_currency(penalty, settings.currency_symbol)}!",
                 color=discord.Color.red()
             )
-        
+                
         embed.add_field(
             name="Next Slut Available",
             value=f"In {self.format_time_remaining(settings.slut_cooldown)}",
@@ -409,37 +407,39 @@ class CurrencySystem(BaseCog):
             )
         else:
             # Failure - lose money and get longer cooldown
-            penalty = int(potential_earnings * 0.5)  # Lose 50% of potential earnings
-            current_balance = await self.get_user_balance(user_id, guild_id)
-            actual_loss = min(penalty, current_balance.cash)  # Can't go below 0
-            
-            if actual_loss > 0:
-                await self.db.update_user_balance(
-                    user_id, guild_id,
-                    cash_delta=-actual_loss,
-                    total_spent_delta=actual_loss
-                )
-            
-            await self.log_transaction(
-                user_id, guild_id, -actual_loss, "crime", success=False,
-                reason=f"Failed crime, lost {actual_loss}"
+            # Apply FULL penalty to CASH ONLY (cash may go negative). Do not touch bank.
+            loss_pct = getattr(settings, "crime_loss_percent", 0.50)  # default 50%
+            penalty = max(1, int(potential_earnings * loss_pct))
+
+            await self.db.update_user_balance(
+                user_id, guild_id,
+                cash_delta = -penalty,                     # cash can go below 0
+                bank_delta = 0,                            # never auto-deduct bank
+                total_spent_delta = penalty,
+                crimes_committed_delta = 1,
+                last_crime = datetime.now(pytz.timezone("America/New_York")),
             )
-            
+
+            await self.log_transaction(
+                user_id, guild_id, -penalty, "crime", success=False,
+                reason=f"Failed crime, lost {penalty} (cash only; cash may be negative)"
+            )
+
             # Get random failure quip
             failure_quip = random.choice(self.crime_quips["failure"])
-            
+
             embed = discord.Embed(
                 title="🚨 Crime Failed!",
-                description=f"{failure_quip}\n\nYou lost {self.format_currency(actual_loss, settings.currency_symbol)}!",
+                description=f"{failure_quip}\n\nYou lost {self.format_currency(penalty, settings.currency_symbol)}!",
                 color=discord.Color.red()
             )
-        
+
         embed.add_field(
             name="Next Crime Available",
             value=f"In {self.format_time_remaining(settings.crime_cooldown)}",
             inline=False
         )
-        
+                
         await interaction.response.send_message(embed=embed)
     
     # ================= Rob Command =================
