@@ -39,7 +39,7 @@ WLOTTERY_MAX_TICKETS_PER_USER = int(os.getenv("WLOTTERY_MAX_TIX", "5"))
 # Behavior
 WLOTTERY_ROLLOVER_IF_NO_ENTRIES = True
 WLOTTERY_CLAIM_WINDOW_HOURS = int(os.getenv("WLOTTERY_CLAIM_HOURS", "12"))
-WLOTTERY_ANNOUNCE_CHANNEL_ENV = "WLOTTERY_ANNOUNCE_CHANNEL_ID"  # optional channel id
+WLOTTERY_ANNOUNCE_CHANNEL_ENV = os.getenv("WLOTTERY_ANNOUNCE_CHANNEL_ID", "")  # optional channel id
 
 # Payout destination for CLAIMS: always cash 
 # (kept here for clarity; if we ever want BANK instead, flip this)
