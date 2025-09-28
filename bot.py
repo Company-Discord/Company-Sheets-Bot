@@ -240,68 +240,50 @@ async def on_guild_emojis_update(guild, before, after):
     description="Force-resync slash commands globally (admin only).",
     guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
 )
-
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        # Reset the shared /tc group to avoid duplicate registrations during reload
-        import importlib
-        import src.bot.command_groups as cg
-        cg = importlib.reload(cg)
+        # figure out scope
+        gid_env = os.getenv("DISCORD_GUILD_ID")
+        gid = int(gid_env) if gid_env else None
 
-        # Fully unload then load extensions (avoids CommandAlreadyRegistered)
-        reloaded = []
-        for ext_path in list(bot.extensions.keys()):
-            try:
-                await bot.unload_extension(ext_path)
-            except Exception as e:
-                print(f"Unload warning {ext_path}: {e}")
-            try:
-                await bot.load_extension(ext_path)
-                reloaded.append(ext_path)
-            except Exception as e:
-                print(f"Load failed {ext_path}: {e}")
-
-        if reloaded:
-            print("Reloaded extensions:\n- " + "\n- ".join(reloaded))
-
-        # Guild sync (hard reset > re-add > sync)
-        guild_id = os.getenv("DISCORD_GUILD_ID")
-        guild_response = ""
-        if guild_id:
-            guild = discord.Object(id=int(guild_id))
-
-            # hard reset the guild's command schema
-            bot.tree.clear_commands(guild=guild)
-
-            # re-add /tc
+        # make sure /tc is present in the local tree before syncing
+        try:
             from src.bot.command_groups import tc
-            bot.tree.add_command(tc, guild=guild)
+            if gid:
+                gobj = discord.Object(id=gid)
+                if not any(c.name == "tc" for c in bot.tree.get_commands(guild=gobj)):
+                    bot.tree.add_command(tc, guild=gobj)
+                    print("Re-added /tc to local tree (guild) before sync")
+            else:
+                if not any(c.name == "tc" for c in bot.tree.get_commands()):
+                    bot.tree.add_command(tc)
+                    print("Re-added /tc to local tree (global) before sync")
+        except Exception as e:
+            print(f"Warning: failed to ensure local /tc: {e}")
 
-            # re-add admin/debug helpers so they exist after the clear
-            for cmd in (sync_commands, debug_tc_work, debug_tc_tree):
-                try:
-                    bot.tree.add_command(cmd, guild=guild)
-                except Exception as e:
-                    print(f"Failed to re-add {getattr(cmd, 'name', cmd)}: {e}")
-
-            # single sync after re-adding
+        # sync (prefer guild-scoped for fast propagation)
+        if gid:
+            guild = discord.Object(id=gid)
             guild_synced = await tree.sync(guild=guild)
-            guild_names = [cmd.name for cmd in guild_synced]
-            print(f"Manual guild sync → {len(guild_synced)} commands to guild {guild_id}: {', '.join(guild_names)}")
-            guild_response = f"🏠 **Guild**: **{len(guild_synced)}** commands: `{', '.join(guild_names)}`\n"
-
-        # Global sync
-        global_synced = await tree.sync()
-        global_names = [cmd.name for cmd in global_synced]
-        print(f"Manual global sync → {len(global_synced)} commands: {', '.join(global_names)}")
-
-        response = f"✅ {guild_response}🌐 **Global**: **{len(global_synced)}** commands: `{', '.join(global_names)}`"
-        await interaction.followup.send(response, ephemeral=True)
+            names = [c.name for c in guild_synced]
+            print(f"Guild sync → {len(guild_synced)} commands: {', '.join(names)}")
+            await interaction.followup.send(
+                f"✅ Guild sync: **{len(guild_synced)}** commands: `{', '.join(names)}`",
+                ephemeral=True
+            )
+        else:
+            global_synced = await tree.sync()
+            names = [c.name for c in global_synced]
+            print(f"Global sync → {len(global_synced)} commands: {', '.join(names)}")
+            await interaction.followup.send(
+                f"✅ Global sync: **{len(global_synced)}** commands: `{', '.join(names)}`",
+                ephemeral=True
+            )
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
         print("sync_commands error:", e)
+        await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
 
 
 # Dangerous: clear all commands and fully resync
