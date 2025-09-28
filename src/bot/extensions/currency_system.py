@@ -181,7 +181,7 @@ class CurrencySystem(BaseCog):
     # Use centrally defined admin subgroup (under /tc)
     
     # ================= Work Command =================
-    @tc.command(name="work", description="Earn money through legitimate work")
+    @tc.command(name="work2", description="Earn money through legitimate work")
     @is_admin_or_manager()
     async def work(self, interaction: discord.Interaction):
         """Work command - earn money with no risk."""
