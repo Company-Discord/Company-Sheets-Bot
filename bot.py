@@ -243,7 +243,7 @@ async def on_ready():
                 bot.tree.add_command(tc, guild=guild)
 
                 # Re-add admin/debug commands
-                for cmd in (sync_commands, debug_tc_work, debug_tc_tree, work_test):
+                for cmd in (sync_commands, debug_tc_work, debug_tc_tree, work_test, debug_cogs, load_currency):
                     try:
                         bot.tree.add_command(cmd, guild=guild)
                     except Exception as e:
