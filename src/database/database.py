@@ -291,10 +291,11 @@ class Database:
                         guild_id BIGINT,
                         title TEXT NOT NULL,
                         description TEXT,
-                        option1 TEXT NOT NULL,
-                        option2 TEXT NOT NULL,
+                        outcome_a TEXT NOT NULL,
+                        outcome_b TEXT NOT NULL,
                         status TEXT DEFAULT 'open',
-                        winning_option BIGINT,
+                        winner TEXT,
+                        embed_message_id BIGINT,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York'),
                         closed_at TIMESTAMP WITH TIME ZONE,
                         created_by BIGINT,
@@ -311,7 +312,7 @@ class Database:
                         prediction_id BIGINT,
                         user_id BIGINT,
                         guild_id BIGINT,
-                        option BIGINT,
+                        side TEXT,
                         amount BIGINT,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York'),
                         FOREIGN KEY (prediction_id) REFERENCES predictions(id)
@@ -444,6 +445,66 @@ class Database:
             print("✅ Migration 1 completed: Added missing columns to predictions table")
         except Exception as e:
             print(f"⚠️ Migration 1 failed: {e}")
+        
+        # Migration 2: Rename prediction columns from option1/option2 to outcome_a/outcome_b
+        try:
+            # Check if old columns exist and new ones don't
+            old_columns_exist = await conn.fetchval("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_name = 'predictions' AND column_name IN ('option1', 'option2')
+            """)
+            
+            if old_columns_exist == 2:
+                # Rename columns
+                await conn.execute("ALTER TABLE predictions RENAME COLUMN option1 TO outcome_a")
+                await conn.execute("ALTER TABLE predictions RENAME COLUMN option2 TO outcome_b")
+                print("✅ Migration 2 completed: Renamed prediction columns")
+            else:
+                print("ℹ️ Migration 2 skipped: Columns already renamed or don't exist")
+        except Exception as e:
+            print(f"⚠️ Migration 2 failed: {e}")
+        
+        # Migration 3: Add missing columns to predictions table
+        try:
+            await conn.execute("""
+                ALTER TABLE predictions 
+                ADD COLUMN IF NOT EXISTS winner TEXT,
+                ADD COLUMN IF NOT EXISTS embed_message_id BIGINT
+            """)
+            print("✅ Migration 3 completed: Added winner and embed_message_id columns")
+        except Exception as e:
+            print(f"⚠️ Migration 3 failed: {e}")
+        
+        # Migration 4: Update prediction_bets table to use side column
+        try:
+            # Check if old option column exists and side doesn't
+            old_column_exists = await conn.fetchval("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_name = 'prediction_bets' AND column_name = 'option'
+            """)
+            
+            side_column_exists = await conn.fetchval("""
+                SELECT COUNT(*) FROM information_schema.columns 
+                WHERE table_name = 'prediction_bets' AND column_name = 'side'
+            """)
+            
+            if old_column_exists == 1 and side_column_exists == 0:
+                # Add side column and migrate data
+                await conn.execute("ALTER TABLE prediction_bets ADD COLUMN side TEXT")
+                await conn.execute("""
+                    UPDATE prediction_bets 
+                    SET side = CASE 
+                        WHEN option = 1 THEN 'A'
+                        WHEN option = 2 THEN 'B'
+                        ELSE 'A'
+                    END
+                """)
+                await conn.execute("ALTER TABLE prediction_bets DROP COLUMN option")
+                print("✅ Migration 4 completed: Updated prediction_bets to use side column")
+            else:
+                print("ℹ️ Migration 4 skipped: Columns already updated or don't exist")
+        except Exception as e:
+            print(f"⚠️ Migration 4 failed: {e}")
     
     async def ensure_initialized(self):
         """Ensure database is initialized before operations."""
@@ -899,33 +960,34 @@ class Database:
             """, winner_id, status, match_id)
     
     # Prediction system methods
-    async def create_prediction(self, guild_id: int, title: str, description: str, 
+    async def create_prediction_old(self, guild_id: int, title: str, description: str, 
                               option1: str, option2: str) -> int:
-        """Create a new prediction."""
+        """Create a new prediction (old method - kept for compatibility)."""
         async with self._pool.acquire() as conn:
             prediction_id = await conn.fetchval("""
-                INSERT INTO predictions (guild_id, title, description, option1, option2)
+                INSERT INTO predictions (guild_id, title, description, outcome_a, outcome_b)
                 VALUES ($1, $2, $3, $4, $5)
                 RETURNING id
             """, guild_id, title, description, option1, option2)
             return prediction_id
     
-    async def add_prediction_bet(self, prediction_id: int, user_id: int, guild_id: int, 
+    async def add_prediction_bet_old(self, prediction_id: int, user_id: int, guild_id: int, 
                                 option: int, amount: int):
-        """Add a prediction bet."""
+        """Add a prediction bet (old method - kept for compatibility)."""
         async with self._pool.acquire() as conn:
+            side = "A" if option == 1 else "B"
             await conn.execute("""
-                INSERT INTO prediction_bets (prediction_id, user_id, guild_id, option, amount)
+                INSERT INTO prediction_bets (prediction_id, user_id, guild_id, side, amount)
                 VALUES ($1, $2, $3, $4, $5)
-            """, prediction_id, user_id, guild_id, option, amount)
+            """, prediction_id, user_id, guild_id, side, amount)
     
-    async def close_prediction(self, prediction_id: int, winning_option: int):
+    async def close_prediction(self, prediction_id: int, winner: str):
         """Close a prediction."""
         async with self._pool.acquire() as conn:
             await conn.execute("""
-                UPDATE predictions SET status = 'closed', winning_option = $1, closed_at = NOW()
+                UPDATE predictions SET status = 'resolved', winner = $1, closed_at = NOW()
                 WHERE id = $2
-            """, winning_option, prediction_id)
+            """, winner, prediction_id)
     
     # ================= Prediction System Methods =================
     

@@ -197,24 +197,24 @@ class BaseCog(commands.Cog):
     # ================= Prediction System Methods =================
     
     async def create_prediction(self, guild_id: int, title: str, description: str, 
-                              option1: str, option2: str) -> int:
+                              outcome_a: str, outcome_b: str) -> int:
         """Create a new prediction."""
         if not self.db:
             raise RuntimeError("Database not initialized")
-        return await self.db.create_prediction(guild_id, title, description, option1, option2)
+        return await self.db.create_prediction(guild_id, title, description, outcome_a, outcome_b)
     
     async def add_prediction_bet(self, prediction_id: int, user_id: int, guild_id: int, 
-                                option: int, amount: int):
+                                side: str, amount: int):
         """Add a prediction bet."""
         if not self.db:
             raise RuntimeError("Database not initialized")
-        await self.db.add_prediction_bet(prediction_id, user_id, guild_id, option, amount)
+        await self.db.add_prediction_bet(prediction_id, user_id, guild_id, side, amount)
     
-    async def close_prediction(self, prediction_id: int, winning_option: int):
+    async def close_prediction(self, prediction_id: int, winner: str):
         """Close a prediction."""
         if not self.db:
             raise RuntimeError("Database not initialized")
-        await self.db.close_prediction(prediction_id, winning_option)
+        await self.db.close_prediction(prediction_id, winner)
     
     # ================= Utility Methods =================
     
