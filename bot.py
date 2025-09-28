@@ -199,25 +199,19 @@ async def on_ready():
         except Exception as e:
             print(f"Emoji cache warmup skipped: {e}")
 
-        # Optional nuke once per process if DISCORD_NUKE=1
-        if os.getenv("DISCORD_NUKE", "0") == "1" and not getattr(bot, "_did_nuke", False):
-            print("DISCORD_NUKE=1 → nuking all commands")
-            await _nuke_all_commands_at_startup()
-            bot._did_nuke = True
-
-        # Sync once per process
+        # ---- Sync commands once per process ----
         if not getattr(bot, "_did_initial_sync", False):
             guild_id = os.getenv("DISCORD_GUILD_ID")
+
             if guild_id:
-                guild = discord.Object(id=int(guild_id))
-                bot.tree.clear_commands(guild=guild)
-                guild_synced = await tree.sync(guild=guild)
+                # Do NOT clear. Copy global cmds into the dev guild, then sync.
+                g = discord.Object(id=int(guild_id))
+                bot.tree.copy_global_to(guild=g)
+                guild_synced = await bot.tree.sync(guild=g)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
             else:
-                if os.getenv("SYNC_GLOBAL_ON_STARTUP", "0") == "1":
-                    bot.tree.clear_commands(guild=None)
-                    global_synced = await tree.sync()
-                    print(f"Global sync → {len(global_synced)} commands")
+                global_synced = await bot.tree.sync()
+                print(f"Global sync → {len(global_synced)} commands: {[c.name for c in global_synced]}")
 
             bot._did_initial_sync = True
 

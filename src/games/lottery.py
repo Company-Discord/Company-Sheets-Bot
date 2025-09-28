@@ -12,7 +12,6 @@ import pytz
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from src.bot.command_groups import tc
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager

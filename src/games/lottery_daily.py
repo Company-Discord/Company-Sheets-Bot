@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from src.bot.command_groups import tc
 
 # Import unified database and base cog
 from src.database.database import Database
