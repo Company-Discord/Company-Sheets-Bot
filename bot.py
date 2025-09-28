@@ -189,6 +189,12 @@ async def on_ready():
         
         guild_id = os.getenv("DISCORD_GUILD_ID")
 
+        #  ADDED: run NUKE once per process if DISCORD_NUKE=1
+        if os.getenv("DISCORD_NUKE", "0") == "1" and not getattr(bot, "_did_nuke", False):
+            print("DISCORD_NUKE=1 → nuking all commands")
+            await _nuke_all_commands_at_startup()
+            bot._did_nuke = True        
+
         # ---- Sync commands once per process (prevents extra API calls on reconnect) ----
         if not getattr(bot, "_did_initial_sync", False):
             # Guild-specific sync first (fast propagation for testing)
@@ -234,38 +240,6 @@ async def on_guild_emojis_update(guild, before, after):
         print(f"❌ Failed to refresh emoji cache: {e}")
 
 # ================= Admin sync helpers =================
-@is_admin_or_manager()
-@tree.command(
-    name="nuke_commands",
-    description="Delete ALL guild & global app commands (danger).",
-    guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
-)
-async def nuke_commands(interaction: discord.Interaction):
-    await interaction.response.send_message("Nuking all commands…", ephemeral=True)
-    try:
-        app_id = bot.application_id or (await bot.application_info()).id
-        gid_env = os.getenv("DISCORD_GUILD_ID")
-        gid = int(gid_env) if gid_env else None
-
-        # delete guild commands
-        if gid:
-            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
-            for c in guild_cmds:
-                await bot.http.delete_guild_command(app_id, gid, c["id"])
-            print(f"NUKE: deleted {len(guild_cmds)} guild commands")
-
-        # delete global commands
-        global_cmds = await bot.http.get_global_commands(app_id)
-        for c in global_cmds:
-            await bot.http.delete_global_command(app_id, c["id"])
-        print(f"NUKE: deleted {len(global_cmds)} global commands")
-
-        await interaction.followup.send("Done. Now run /sync_commands.", ephemeral=True)
-    except Exception as e:
-        print("nuke_commands error:", e)
-        await interaction.followup.send(f"❌ Nuke failed: `{e}`", ephemeral=True)
-
-
 @is_admin_or_manager()
 @tree.command(
     name="sync_commands",
@@ -334,6 +308,34 @@ async def sync_commands(interaction: discord.Interaction):
     except Exception as e:
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+
+# ===== One-shot NUKE (runs at startup) =====
+async def _nuke_all_commands_at_startup():
+    try:
+        app_id = bot.application_id or (await bot.application_info()).id
+        gid_env = os.getenv("DISCORD_GUILD_ID")
+        gid = int(gid_env) if gid_env else None
+
+        deleted_guild = deleted_global = 0
+
+        # delete guild commands
+        if gid:
+            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+            for c in guild_cmds:
+                await bot.http.delete_guild_command(app_id, gid, c["id"])
+                deleted_guild += 1
+
+        # delete global commands
+        global_cmds = await bot.http.get_global_commands(app_id)
+        for c in global_cmds:
+            await bot.http.delete_global_command(app_id, c["id"])
+            deleted_global += 1
+
+        print(f"NUKE at startup: deleted guild={deleted_guild}, global={deleted_global}")
+    except Exception as e:
+        print(f"NUKE error: {e}")
+
+
 
 
 # Dangerous: clear all commands and fully resync
