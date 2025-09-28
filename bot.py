@@ -242,49 +242,62 @@ async def on_guild_emojis_update(guild, before, after):
 )
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
+
     try:
-        # figure out scope
         gid_env = os.getenv("DISCORD_GUILD_ID")
         gid = int(gid_env) if gid_env else None
 
-        # make sure /tc is present in the local tree before syncing
+        # 1) Purge remote /tc (guild + global)
+        try:
+            app_id = bot.application_id or (await bot.application_info()).id
+            if gid:
+                for c in await bot.http.get_guild_commands(app_id, gid):
+                    if c.get("name") == "tc":
+                        await bot.http.delete_guild_command(app_id, gid, c["id"])
+                        print("Deleted stale GUILD /tc")
+            for c in await bot.http.get_global_commands(app_id):
+                if c.get("name") == "tc":
+                    await bot.http.delete_global_command(app_id, c["id"])
+                    print("Deleted stale GLOBAL /tc")
+        except Exception as e:
+            print(f"Warning: couldn't purge remote /tc: {e}")
+
+        # 2) Ensure local /tc exists in the tree
         try:
             from src.bot.command_groups import tc
             if gid:
                 gobj = discord.Object(id=gid)
                 if not any(c.name == "tc" for c in bot.tree.get_commands(guild=gobj)):
                     bot.tree.add_command(tc, guild=gobj)
-                    print("Re-added /tc to local tree (guild) before sync")
+                    print("Re-added /tc to local guild tree")
             else:
                 if not any(c.name == "tc" for c in bot.tree.get_commands()):
                     bot.tree.add_command(tc)
-                    print("Re-added /tc to local tree (global) before sync")
+                    print("Re-added /tc to local global tree")
         except Exception as e:
             print(f"Warning: failed to ensure local /tc: {e}")
 
-        # sync (prefer guild-scoped for fast propagation)
+        # 3) Sync (prefer guild for fast propagation)
         if gid:
-            guild = discord.Object(id=gid)
-            guild_synced = await tree.sync(guild=guild)
-            names = [c.name for c in guild_synced]
-            print(f"Guild sync → {len(guild_synced)} commands: {', '.join(names)}")
+            synced = await tree.sync(guild=discord.Object(id=gid))
+            names = [c.name for c in synced]
+            print(f"Guild sync → {len(synced)} commands: {', '.join(names)}")
             await interaction.followup.send(
-                f"✅ Guild sync: **{len(guild_synced)}** commands: `{', '.join(names)}`",
-                ephemeral=True
+                f"✅ Guild sync: **{len(synced)}** commands: `{', '.join(names)}`",
+                ephemeral=True,
             )
         else:
-            global_synced = await tree.sync()
-            names = [c.name for c in global_synced]
-            print(f"Global sync → {len(global_synced)} commands: {', '.join(names)}")
+            synced = await tree.sync()
+            names = [c.name for c in synced]
+            print(f"Global sync → {len(synced)} commands: {', '.join(names)}")
             await interaction.followup.send(
-                f"✅ Global sync: **{len(global_synced)}** commands: `{', '.join(names)}`",
-                ephemeral=True
+                f"✅ Global sync: **{len(synced)}** commands: `{', '.join(names)}`",
+                ephemeral=True,
             )
 
     except Exception as e:
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
-
 
 # Dangerous: clear all commands and fully resync
 """
