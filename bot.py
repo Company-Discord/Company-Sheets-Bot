@@ -243,97 +243,102 @@ async def on_guild_emojis_update(guild, before, after):
 @is_admin_or_manager()
 @tree.command(
     name="sync_commands",
-    description="Force-resync slash commands globally (admin only).",
+    description="Force-resync slash commands (guild only, no nuke).",
     guild=discord.Object(id=int(os.getenv("DISCORD_GUILD_ID", "0")))
 )
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
     try:
-        import asyncio
-
-        # --- hot-reload cogs so local tree is fresh (optional but helpful)
-        for ext_path in list(bot.extensions.keys()):
-            try:
-                await bot.reload_extension(ext_path)
-            except Exception as e:
-                print(f"Reload warning {ext_path}: {e}")
-
-        # figure out guild
         gid_env = os.getenv("DISCORD_GUILD_ID")
-        if not gid_env:
-            # fall back to global sync if you don’t use a dev guild
-            global_synced = await tree.sync()
-            print(f"Global sync → {len(global_synced)} commands: {', '.join(c.name for c in global_synced)}")
-            await interaction.followup.send(
-                f"✅ Global sync: **{len(global_synced)}** commands: "
-                f"`{', '.join(c.name for c in global_synced)}`",
-                ephemeral=True,
-            )
-            return
+        gobj = discord.Object(id=int(gid_env)) if gid_env else None
 
-        gid = int(gid_env)
-        gobj = discord.Object(id=gid)
-
-        # --------- HARD NUKE (guild) ----------
-        # 1) Clear local tree for this guild
-        tree.clear_commands(guild=gobj)
-
-        # 2) Delete ALL remote guild commands
-        app_id = bot.application_id or (await bot.application_info()).id
-        try:
-            remote = await bot.http.get_guild_commands(app_id, gid)
-            for c in remote:
-                await bot.http.delete_guild_command(app_id, gid, c["id"])
-            print(f"NUKE: deleted {len(remote)} remote guild commands")
-        except Exception as e:
-            print(f"NUKE: failed to list/delete remote: {e}")
-
-        # tiny pause so Discord processes deletions
-        await asyncio.sleep(1)
-
-        # 3) Re-add only your /tc group to the local tree
+        # Ensure /tc is in the local tree
         from src.bot.command_groups import tc
-        bot.tree.add_command(tc, guild=gobj)
-        print("Re-added fresh /tc to local tree")
+        if gobj:
+            if not any(c.name == "tc" for c in bot.tree.get_commands(guild=gobj)):
+                bot.tree.add_command(tc, guild=gobj)
+        else:
+            if not any(c.name == "tc" for c in bot.tree.get_commands()):
+                bot.tree.add_command(tc)
 
-        # 4) Guild sync (fast propagation)
-        guild_synced = await tree.sync(guild=gobj)
-        names = [c.name for c in guild_synced]
-        print(f"Guild sync → {len(guild_synced)} commands: {', '.join(names)}")
+        # Ensure helper commands are also present (so they don't vanish)
+        # Include work_test if you added it.
+        helpers = [sync_commands, debug_tc_work, debug_tc_tree]
+        try:
+            helpers.append(work_test)  # if defined
+        except NameError:
+            pass
+
+        for cmd in helpers:
+            try:
+                if gobj:
+                    bot.tree.add_command(cmd, guild=gobj)
+                else:
+                    bot.tree.add_command(cmd)
+            except Exception:
+                # it's fine if it's already present
+                pass
+
+        # Sync (prefer guild-scoped for fast propagation)
+        if gobj:
+            synced = await tree.sync(guild=gobj)
+        else:
+            synced = await tree.sync()
+
+        names = [c.name for c in synced]
+        print(f"Guild sync → {len(synced)} commands: {', '.join(names)}")
         await interaction.followup.send(
-            f"✅ Guild sync: **{len(guild_synced)}** commands: `{', '.join(names)}`",
-            ephemeral=True,
+            f"✅ Synced **{len(synced)}** commands: `{', '.join(names)}`",
+            ephemeral=True
         )
-
     except Exception as e:
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
 
-# ===== One-shot NUKE (runs at startup) =====
-async def _nuke_all_commands_at_startup():
+###### DEBUGGING AND LOADING ########
+@tree.command(name="debug_cogs", description="TEMP — list loaded cogs & extensions")
+async def debug_cogs(interaction: discord.Interaction):
+    bot = interaction.client
+    await interaction.response.send_message(
+        f"**Cogs:** {list(bot.cogs.keys())}\n**Extensions:** {list(bot.extensions.keys())}",
+        ephemeral=True,
+    )
+
+@tree.command(name="load_currency", description="TEMP — load CurrencySystem extension")
+async def load_currency(interaction: discord.Interaction):
+    bot = interaction.client
     try:
-        app_id = bot.application_id or (await bot.application_info()).id
-        gid_env = os.getenv("DISCORD_GUILD_ID")
-        gid = int(gid_env) if gid_env else None
-
-        deleted_guild = deleted_global = 0
-
-        # delete guild commands
-        if gid:
-            guild_cmds = await bot.http.get_guild_commands(app_id, gid)
-            for c in guild_cmds:
-                await bot.http.delete_guild_command(app_id, gid, c["id"])
-                deleted_guild += 1
-
-        # delete global commands
-        global_cmds = await bot.http.get_global_commands(app_id)
-        for c in global_cmds:
-            await bot.http.delete_global_command(app_id, c["id"])
-            deleted_global += 1
-
-        print(f"NUKE at startup: deleted guild={deleted_guild}, global={deleted_global}")
+        await bot.load_extension("src.bot.extensions.currency_system")  # <-- your path
+        await interaction.response.send_message("Loaded `src.bot.extensions.currency_system` ✅", ephemeral=True)
     except Exception as e:
-        print(f"NUKE error: {e}")
+        await interaction.response.send_message(f"Load failed: `{e}`", ephemeral=True)
+
+
+# # ===== One-shot NUKE (runs at startup) =====
+# async def _nuke_all_commands_at_startup():
+#     try:
+#         app_id = bot.application_id or (await bot.application_info()).id
+#         gid_env = os.getenv("DISCORD_GUILD_ID")
+#         gid = int(gid_env) if gid_env else None
+
+#         deleted_guild = deleted_global = 0
+
+#         # delete guild commands
+#         if gid:
+#             guild_cmds = await bot.http.get_guild_commands(app_id, gid)
+#             for c in guild_cmds:
+#                 await bot.http.delete_guild_command(app_id, gid, c["id"])
+#                 deleted_guild += 1
+
+#         # delete global commands
+#         global_cmds = await bot.http.get_global_commands(app_id)
+#         for c in global_cmds:
+#             await bot.http.delete_global_command(app_id, c["id"])
+#             deleted_global += 1
+
+#         print(f"NUKE at startup: deleted guild={deleted_guild}, global={deleted_global}")
+#     except Exception as e:
+#         print(f"NUKE error: {e}")
 
 
 
