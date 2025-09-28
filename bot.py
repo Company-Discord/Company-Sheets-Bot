@@ -242,62 +242,67 @@ async def on_guild_emojis_update(guild, before, after):
 )
 async def sync_commands(interaction: discord.Interaction):
     await interaction.response.send_message("Syncing commands…", ephemeral=True)
-
     try:
+        import asyncio
+
+        # --- hot-reload cogs so local tree is fresh (optional but helpful)
+        for ext_path in list(bot.extensions.keys()):
+            try:
+                await bot.reload_extension(ext_path)
+            except Exception as e:
+                print(f"Reload warning {ext_path}: {e}")
+
+        # figure out guild
         gid_env = os.getenv("DISCORD_GUILD_ID")
-        gid = int(gid_env) if gid_env else None
-
-        # 1) Purge remote /tc (guild + global)
-        try:
-            app_id = bot.application_id or (await bot.application_info()).id
-            if gid:
-                for c in await bot.http.get_guild_commands(app_id, gid):
-                    if c.get("name") == "tc":
-                        await bot.http.delete_guild_command(app_id, gid, c["id"])
-                        print("Deleted stale GUILD /tc")
-            for c in await bot.http.get_global_commands(app_id):
-                if c.get("name") == "tc":
-                    await bot.http.delete_global_command(app_id, c["id"])
-                    print("Deleted stale GLOBAL /tc")
-        except Exception as e:
-            print(f"Warning: couldn't purge remote /tc: {e}")
-
-        # 2) Ensure local /tc exists in the tree
-        try:
-            from src.bot.command_groups import tc
-            if gid:
-                gobj = discord.Object(id=gid)
-                if not any(c.name == "tc" for c in bot.tree.get_commands(guild=gobj)):
-                    bot.tree.add_command(tc, guild=gobj)
-                    print("Re-added /tc to local guild tree")
-            else:
-                if not any(c.name == "tc" for c in bot.tree.get_commands()):
-                    bot.tree.add_command(tc)
-                    print("Re-added /tc to local global tree")
-        except Exception as e:
-            print(f"Warning: failed to ensure local /tc: {e}")
-
-        # 3) Sync (prefer guild for fast propagation)
-        if gid:
-            synced = await tree.sync(guild=discord.Object(id=gid))
-            names = [c.name for c in synced]
-            print(f"Guild sync → {len(synced)} commands: {', '.join(names)}")
+        if not gid_env:
+            # fall back to global sync if you don’t use a dev guild
+            global_synced = await tree.sync()
+            print(f"Global sync → {len(global_synced)} commands: {', '.join(c.name for c in global_synced)}")
             await interaction.followup.send(
-                f"✅ Guild sync: **{len(synced)}** commands: `{', '.join(names)}`",
+                f"✅ Global sync: **{len(global_synced)}** commands: "
+                f"`{', '.join(c.name for c in global_synced)}`",
                 ephemeral=True,
             )
-        else:
-            synced = await tree.sync()
-            names = [c.name for c in synced]
-            print(f"Global sync → {len(synced)} commands: {', '.join(names)}")
-            await interaction.followup.send(
-                f"✅ Global sync: **{len(synced)}** commands: `{', '.join(names)}`",
-                ephemeral=True,
-            )
+            return
+
+        gid = int(gid_env)
+        gobj = discord.Object(id=gid)
+
+        # --------- HARD NUKE (guild) ----------
+        # 1) Clear local tree for this guild
+        tree.clear_commands(guild=gobj)
+
+        # 2) Delete ALL remote guild commands
+        app_id = bot.application_id or (await bot.application_info()).id
+        try:
+            remote = await bot.http.get_guild_commands(app_id, gid)
+            for c in remote:
+                await bot.http.delete_guild_command(app_id, gid, c["id"])
+            print(f"NUKE: deleted {len(remote)} remote guild commands")
+        except Exception as e:
+            print(f"NUKE: failed to list/delete remote: {e}")
+
+        # tiny pause so Discord processes deletions
+        await asyncio.sleep(1)
+
+        # 3) Re-add only your /tc group to the local tree
+        from src.bot.command_groups import tc
+        bot.tree.add_command(tc, guild=gobj)
+        print("Re-added fresh /tc to local tree")
+
+        # 4) Guild sync (fast propagation)
+        guild_synced = await tree.sync(guild=gobj)
+        names = [c.name for c in guild_synced]
+        print(f"Guild sync → {len(guild_synced)} commands: {', '.join(names)}")
+        await interaction.followup.send(
+            f"✅ Guild sync: **{len(guild_synced)}** commands: `{', '.join(names)}`",
+            ephemeral=True,
+        )
 
     except Exception as e:
         print("sync_commands error:", e)
         await interaction.followup.send(f"❌ Sync failed: `{e}`", ephemeral=True)
+
 
 # Dangerous: clear all commands and fully resync
 """
