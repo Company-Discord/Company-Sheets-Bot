@@ -8,6 +8,7 @@ from datetime import datetime
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager
+from src.api.engauge_adapter import EngaugeAdapter, InsufficientFunds
 
 # ================== Config ===================
 MANAGER_ROLE_NAME = os.getenv("MANAGER_ROLE_NAME", "Techie")
@@ -131,7 +132,7 @@ class PersonalBetButtons(discord.ui.View):
 
 # ================== Cog ===================
 class Predictions(BaseCog):
-    """Predictions cog that uses the unified database."""
+    """Predictions cog that uses Engauge currency system."""
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self._lock_task.start()
@@ -144,6 +145,42 @@ class Predictions(BaseCog):
         #     for command in self.__cog_app_commands__:
         #         command.guild = guild_obj
         #         print(f"[Predictions] Assigned guild to command: {command.name}")
+    
+    def _get_engauge_adapter(self, guild_id: int) -> EngaugeAdapter:
+        """Get Engauge adapter for the guild."""
+        return EngaugeAdapter(guild_id)
+    
+    async def check_balance(self, user_id: int, guild_id: int, amount: int) -> bool:
+        """Check if user has enough balance using Engauge."""
+        try:
+            adapter = self._get_engauge_adapter(guild_id)
+            balance = await adapter.get_balance(user_id)
+            return balance >= amount
+        except Exception as e:
+            print(f"Error checking balance: {e}")
+            return False
+    
+    async def deduct_cash(self, user_id: int, guild_id: int, amount: int, reason: str) -> bool:
+        """Deduct cash using Engauge."""
+        try:
+            adapter = self._get_engauge_adapter(guild_id)
+            await adapter.debit(user_id, amount)
+            return True
+        except InsufficientFunds:
+            return False
+        except Exception as e:
+            print(f"Error deducting cash: {e}")
+            return False
+    
+    async def add_cash(self, user_id: int, guild_id: int, amount: int, reason: str) -> bool:
+        """Add cash using Engauge."""
+        try:
+            adapter = self._get_engauge_adapter(guild_id)
+            await adapter.credit(user_id, amount)
+            return True
+        except Exception as e:
+            print(f"Error adding cash: {e}")
+            return False
 
     def cog_unload(self):
         self._lock_task.cancel()

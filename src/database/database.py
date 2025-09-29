@@ -420,6 +420,19 @@ class Database:
                 await conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_bets_prediction ON prediction_bets(prediction_id)")
                 await conn.execute("CREATE INDEX IF NOT EXISTS idx_prediction_bets_user ON prediction_bets(user_id, guild_id)")
                 
+                # Add unique constraint for prediction_bets if it doesn't exist
+                try:
+                    await conn.execute("""
+                        ALTER TABLE prediction_bets 
+                        ADD CONSTRAINT unique_user_guild_bet UNIQUE (guild_id, user_id)
+                    """)
+                    print("✅ Added unique constraint to prediction_bets table")
+                except Exception as e:
+                    if "already exists" in str(e) or "duplicate key" in str(e).lower():
+                        print("ℹ️ Unique constraint already exists on prediction_bets")
+                    else:
+                        print(f"⚠️ Could not add unique constraint: {e}")
+                
                 # Check if migrations have already been run
                 migration_completed = await self.check_migration_status()
                 if not migration_completed:

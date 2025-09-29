@@ -3,6 +3,8 @@ from discord import app_commands
 import os
 import json
 from typing import Dict, Any, Optional
+import math
+import random
 # from src.api.unbelievaboat_api import Client  # COMMENTED OUT - Using unified database system instead
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
@@ -361,3 +363,84 @@ TC_EMOJI = os.getenv("TC_EMOJI", "💰")
 #     rob_min_percent: float = 0.02
 #     rob_max_percent: float = 0.08
 #     rob_success_rate: float = 0.3
+
+def compute_effective_wealth(cash: int, bank: int, bank_weight: float = 0.15) -> int:
+    """
+    Compute effective wealth used for payout scaling.
+    Bank is counted at a reduced weight so savings don't snowball payouts 1:1.
+    """
+    return max(0, int(cash + bank_weight * bank))
+
+
+def dampener_multiplier(wealth: int, *, pivot: int, beta: float, floor: float) -> float:
+    """
+    Smooth diminishing-returns multiplier in [floor, 1].
+    Uses (wealth/pivot + 1)^(-beta) with a minimum floor.
+    """
+    if pivot <= 0:
+        return 1.0
+    mult = (wealth / pivot + 1.0) ** (-beta)
+    return max(floor, min(1.0, mult))
+
+
+def soft_cap_amount(wealth: int, *, base: int, k: int) -> int:
+    """
+    Soft cap that grows sublinearly with sqrt(wealth).
+    """
+    return int(base + k * (wealth ** 0.5))
+
+
+def compute_scaled_earning(
+    *,
+    cash: int,
+    bank: int,
+    min_percent: float,
+    max_percent: float,
+    bank_weight: float = 0.15,
+    pivot: int = 250_000,
+    beta: float = 0.6,
+    floor: float = 0.3,
+    cap_base: int = 10_000,
+    cap_k: int = 60,
+    minimum_reward: int = 100,
+    max_random_reward: int = 500,
+) -> int:
+    """
+    Randomize payout in [min_percent, max_percent] of effective wealth,
+    then apply diminishing returns and a sqrt soft cap. Returns int >= 1.
+    """
+    w_eff = compute_effective_wealth(cash, bank, bank_weight=bank_weight)
+
+    rmin = int(w_eff * min_percent)
+    rmax = int(w_eff * max_percent)
+    if rmin > rmax:
+        rmin, rmax = rmax, rmin
+    raw = max(1, random.randint(rmin, rmax))
+
+    mult = dampener_multiplier(w_eff, pivot=pivot, beta=beta, floor=floor)
+    damped = int(raw * mult)
+
+    cap = soft_cap_amount(w_eff, base=cap_base, k=cap_k)
+    final = max(1, min(damped, cap))
+    
+    # Debug output
+    print(f"🔍 Earning Debug:")
+    print(f"  Effective wealth: {w_eff:,} (cash: {cash:,}, bank: {bank:,})")
+    print(f"  Raw range: {rmin:,} - {rmax:,} (chose: {raw:,})")
+    print(f"  Dampener: {mult:.3f} (pivot: {pivot:,}, beta: {beta}, floor: {floor})")
+    print(f"  After dampener: {damped:,}")
+    print(f"  Soft cap: {cap:,} (base: {cap_base:,}, k: {cap_k})")
+    print(f"  Final earning: {final:,}")
+    if final < damped:
+        print(f"  📉 Capped by soft limit (reduced by {damped - final:,})")
+    if mult < 1.0:
+        print(f"  📉 Dampened by {((1.0 - mult) * 100):.1f}% (reduced by {raw - damped:,})")
+    # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
+    if final < minimum_reward:
+        earnings = random.randint(minimum_reward, max_random_reward)
+    else:
+        earnings = final
+    
+    print(f"  Final earning: {earnings:,}")
+    return earnings
+

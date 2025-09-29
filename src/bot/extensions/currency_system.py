@@ -14,7 +14,7 @@ from discord import app_commands
 import pytz
 
 from src.bot.base_cog import BaseCog
-from src.utils.utils import is_admin_or_manager
+from src.utils.utils import is_admin_or_manager, compute_scaled_earning
 from discord import app_commands
 
 # Currency emoji constant
@@ -204,24 +204,24 @@ class CurrencySystem(BaseCog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Get user balance and settings, then calculate earnings as percentage of total balance
-        user_balance = await self.get_user_balance(user_id, guild_id)
+        # Get user balance and settings, then calculate earnings using dampener + soft cap
+        # user_balance = await self.get_user_balance(user_id, guild_id)
         settings = await self.get_guild_settings(guild_id)
-        total_balance = user_balance.cash + user_balance.bank
-        min_earnings = int(total_balance * settings.work_min_percent)
-        max_earnings = int(total_balance * settings.work_max_percent)
-        
-        # Ensure min_earnings <= max_earnings to avoid randrange error
-        if min_earnings > max_earnings:
-            min_earnings, max_earnings = max_earnings, min_earnings
-        
-        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
-        
-        # Apply minimum reward: if calculated earnings < 100, award 100-150 instead
-        if calculated_earnings < 100:
-            earnings = random.randint(200, 500)
-        else:
-            earnings = calculated_earnings
+        earnings = random.randint(250, 7500)
+        # earnings = compute_scaled_earning(
+        #     cash=user_balance.cash,
+        #     bank=user_balance.bank,
+        #     min_percent=settings.work_min_percent,
+        #     max_percent=settings.work_max_percent,
+        #     bank_weight=0.15,
+        #     pivot=250_000,
+        #     beta=0.6,
+        #     floor=0.35,
+        #     cap_base=10_000,
+        #     cap_k=50,
+        #     minimum_reward=100,
+        #     max_random_reward=500,
+        # )
         
         # Update user balance
         est = pytz.timezone('America/New_York')
@@ -273,24 +273,23 @@ class CurrencySystem(BaseCog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Get user balance and settings, then calculate potential earnings as percentage of total balance
+        # Get user balance and settings, then calculate potential earnings using dampener + soft cap
         user_balance = await self.get_user_balance(user_id, guild_id)
         settings = await self.get_guild_settings(guild_id)
-        total_balance = user_balance.cash + user_balance.bank
-        min_earnings = int(total_balance * settings.slut_min_percent)
-        max_earnings = int(total_balance * settings.slut_max_percent)
-        
-        # Ensure min_earnings <= max_earnings to avoid randrange error
-        if min_earnings > max_earnings:
-            min_earnings, max_earnings = max_earnings, min_earnings
-        
-        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
-        
-        # Apply minimum reward: if calculated earnings < 750, award 750-5000 instead
-        if calculated_earnings < 750:
-            potential_earnings = random.randint(750, 5000)
-        else:
-            potential_earnings = calculated_earnings
+        potential_earnings = compute_scaled_earning(
+            cash=user_balance.cash,
+            bank=user_balance.bank,
+            min_percent=settings.slut_min_percent,
+            max_percent=settings.slut_max_percent,
+            bank_weight=0.15,
+            pivot=500_000,
+            beta=0.6,
+            floor=0.30,
+            cap_base=30_000,
+            cap_k=70,
+            minimum_reward=750,
+            max_random_reward=5000,
+        )
         
         # Check for failure
         success = random.random() > settings.slut_fail_chance
@@ -325,21 +324,21 @@ class CurrencySystem(BaseCog):
 
             await self.db.update_user_balance(
                 user_id, guild_id,
-                cash_delta = -penalty,                    # cash can go below 0
+                cash_delta = -potential_earnings,                    # cash can go below 0
                 bank_delta = 0,                           # never auto-deduct bank
-                total_spent_delta = penalty,
+                total_spent_delta = potential_earnings,
                 last_slut = datetime.now(pytz.timezone("America/New_York")),
             )
 
             await self.log_transaction(
-                user_id, guild_id, -penalty, "slut", success=False,
-                reason=f"Failed slut activity, lost {penalty} (cash only; cash may be negative)"
+                user_id, guild_id, -potential_earnings, "slut", success=False,
+                reason=f"Failed slut activity, lost {potential_earnings} (cash only; cash may be negative)"
             )
 
             failure_quip = random.choice(self.slut_quips["failure"])
             embed = discord.Embed(
                 title="💔 Slut Activity Failed!",
-                description=f"{failure_quip}\n\nYou lost {self.format_currency(penalty, settings.currency_symbol)}!",
+                description=f"{failure_quip}\n\nYou lost {self.format_currency(potential_earnings, settings.currency_symbol)}!",
                 color=discord.Color.red()
             )
                 
@@ -369,27 +368,30 @@ class CurrencySystem(BaseCog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Get user balance and settings, then calculate potential earnings as percentage of total balance
+        # Get user balance and settings, then calculate potential earnings using dampener + soft cap
         user_balance = await self.get_user_balance(user_id, guild_id)
         settings = await self.get_guild_settings(guild_id)
-        total_balance = user_balance.cash + user_balance.bank
-        min_earnings = int(total_balance * settings.crime_min_percent)
-        max_earnings = int(total_balance * settings.crime_max_percent)
+        potential_earnings = compute_scaled_earning(
+            cash=user_balance.cash,
+            bank=user_balance.bank,
+            min_percent=settings.crime_min_percent,
+            max_percent=settings.crime_max_percent,
+            bank_weight=0.15,
+            pivot=1_500_000,
+            beta=0.6,
+            floor=0.25,
+            cap_base=90_000,
+            cap_k=90,
+            minimum_reward=15000,
+            max_random_reward=25000,
+        )
         
-        # Ensure min_earnings <= max_earnings to avoid randrange error
-        if min_earnings > max_earnings:
-            min_earnings, max_earnings = max_earnings, min_earnings
-        
-        calculated_earnings = max(1, random.randint(min_earnings, max_earnings))
-        
-        # Apply minimum reward: if calculated earnings < 15000, award 15000-25000 instead
-        if calculated_earnings < 15000:
-            potential_earnings = random.randint(15000, 25000)
+        if(user_balance.cash + user_balance.bank < 15000):
+            crime_success_rate = 0.9
         else:
-            potential_earnings = calculated_earnings
-        
+            crime_success_rate = settings.crime_success_rate
         # Check for success
-        success = random.random() <= settings.crime_success_rate
+        success = random.random() <= crime_success_rate
         
         # Update crime stats
         await self.db.update_user_balance(
@@ -428,16 +430,16 @@ class CurrencySystem(BaseCog):
 
             await self.db.update_user_balance(
                 user_id, guild_id,
-                cash_delta = -penalty,                     # cash can go below 0
+                cash_delta = -potential_earnings,                     # cash can go below 0
                 bank_delta = 0,                            # never auto-deduct bank
-                total_spent_delta = penalty,
+                total_spent_delta = potential_earnings,
                 crimes_committed_delta = 1,
                 last_crime = datetime.now(pytz.timezone("America/New_York")),
             )
 
             await self.log_transaction(
-                user_id, guild_id, -penalty, "crime", success=False,
-                reason=f"Failed crime, lost {penalty} (cash only; cash may be negative)"
+                user_id, guild_id, -potential_earnings, "crime", success=False,
+                reason=f"Failed crime, lost {potential_earnings} (cash only; cash may be negative)"
             )
 
             # Get random failure quip
@@ -445,7 +447,7 @@ class CurrencySystem(BaseCog):
 
             embed = discord.Embed(
                 title="🚨 Crime Failed!",
-                description=f"{failure_quip}\n\nYou lost {self.format_currency(penalty, settings.currency_symbol)}!",
+                description=f"{failure_quip}\n\nYou lost {self.format_currency(potential_earnings, settings.currency_symbol)}!",
                 color=discord.Color.red()
             )
 
