@@ -40,29 +40,35 @@ class HLView(discord.ui.View):
         if st.done:
             return
         st.done = True
-        # Refund (treat as cancel)
+        
         try:
-            await self.cog.add_cash(st.user_id, st.guild_id, st.bet, "HighLow timeout (refund)")
-        except Exception:
-            pass
+            # Refund (treat as cancel)
+            try:
+                await self.cog.add_cash(st.user_id, st.guild_id, st.bet, "HighLow timeout (refund)")
+            except Exception as e:
+                # Log the error for debugging but don't fail the timeout process
+                print(f"Failed to refund HighLow bet for user {st.user_id}: {e}")
+                pass
 
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
+            for c in self.children:
+                if isinstance(c, discord.ui.Button):
+                    c.disabled = True
 
-        emb = discord.Embed(
-            title="High / Low — Timed out",
-            description=f"Bet {fmt_tc(st.bet)} refunded.",
-            color=discord.Color.gold()
-        )
-        emb.add_field(name="Starting Number", value=f"**{st.x}**", inline=True)
+            emb = discord.Embed(
+                title="High / Low — Timed out",
+                description=f"Bet {fmt_tc(st.bet)} refunded.",
+                color=discord.Color.gold()
+            )
+            emb.add_field(name="Starting Number", value=f"**{st.x}**", inline=True)
 
-        try:
-            if st.message:
-                await st.message.edit(embed=emb, view=self)
-        except Exception:
-            pass
-        self.cog.active.pop(st.user_id, None)
+            try:
+                if st.message:
+                    await st.message.edit(embed=emb, view=self)
+            except Exception:
+                pass
+        finally:
+            # Always clear the active session, even if exceptions occur above
+            self.cog.active.pop(st.user_id, None)
 
     # ---------- Buttons ----------
 
@@ -79,68 +85,71 @@ class HLView(discord.ui.View):
     async def _resolve(self, interaction: discord.Interaction, choice: str):
         st = self.st
         if interaction.user.id != st.user_id:
-            return await interaction.response.send_message("This isn’t your game.", ephemeral=True)
+            return await interaction.response.send_message("This isn't your game.", ephemeral=True)
         if st.done:
             return await interaction.response.defer()
 
         st.done = True
-        self.cog.active.pop(st.user_id, None)
-
-        # Draw new number
-        y = random.randint(1, 100)
-
-        # Decide outcome
-        if y == st.x:
-            outcome = "push"
-            credit = st.bet
-            result_text = f"**Push.** New number was **{y}** (same). Your bet is returned."
-        elif (choice == "higher" and y > st.x) or (choice == "lower" and y < st.x):
-            outcome = "win"
-            credit = st.bet * 2  # even money
-            result_text = f"**You win!** New number **{y}**. Payout {fmt_tc(credit)}."
-        else:
-            outcome = "lose"
-            credit = 0
-            result_text = f"**You lose.** New number **{y}**."
-
-        # Payout / Refund
-        if credit:
-            try:
-                await self.cog.add_cash(st.user_id, st.guild_id, credit, f"HighLow {outcome}")
-            except Exception as e:
-                result_text += f"\n⚠️ Payout error: {e}"
-
-        # --- Weekly Lottery: award tickets on net-positive winnings (High/Low) ---
-        # High/Low is even-money; profit on a win == original bet. Push/Lose => no event.
-        try:
-            if outcome == "win":
-                self.cog.bot.dispatch(
-                    "gamble_winnings",
-                    st.guild_id,
-                    st.user_id,
-                    st.bet,     # profit
-                    "HighLow",
-                )
-        except Exception:
-            pass
-        # --- end weekly lottery block ---
-
         
-        for c in self.children:
-            if isinstance(c, discord.ui.Button):
-                c.disabled = True
+        try:
+            # Draw new number
+            y = random.randint(1, 100)
 
-        emb = discord.Embed(title="High / Low — Result", color=discord.Color.green() if outcome=="win" else (discord.Color.gold() if outcome=="push" else discord.Color.red()))
-        emb.add_field(name="Starting Number", value=f"**{st.x}**", inline=True)
-        emb.add_field(name="Your Choice", value=choice.capitalize(), inline=True)
-        emb.add_field(name="Bet", value=fmt_tc(st.bet), inline=True)
-        emb.add_field(name="Outcome", value=result_text, inline=False)
+            # Decide outcome
+            if y == st.x:
+                outcome = "push"
+                credit = st.bet
+                result_text = f"**Push.** New number was **{y}** (same). Your bet is returned."
+            elif (choice == "higher" and y > st.x) or (choice == "lower" and y < st.x):
+                outcome = "win"
+                credit = st.bet * 2  # even money
+                result_text = f"**You win!** New number **{y}**. Payout {fmt_tc(credit)}."
+            else:
+                outcome = "lose"
+                credit = 0
+                result_text = f"**You lose.** New number **{y}**."
 
-        if interaction.response.is_done():
-            if st.message:
-                await st.message.edit(embed=emb, view=self)
-        else:
-            await interaction.response.edit_message(embed=emb, view=self)
+            # Payout / Refund
+            if credit:
+                try:
+                    await self.cog.add_cash(st.user_id, st.guild_id, credit, f"HighLow {outcome}")
+                except Exception as e:
+                    result_text += f"\n⚠️ Payout error: {e}"
+
+            # --- Weekly Lottery: award tickets on net-positive winnings (High/Low) ---
+            # High/Low is even-money; profit on a win == original bet. Push/Lose => no event.
+            try:
+                if outcome == "win":
+                    self.cog.bot.dispatch(
+                        "gamble_winnings",
+                        st.guild_id,
+                        st.user_id,
+                        st.bet,     # profit
+                        "HighLow",
+                    )
+            except Exception:
+                pass
+            # --- end weekly lottery block ---
+
+            
+            for c in self.children:
+                if isinstance(c, discord.ui.Button):
+                    c.disabled = True
+
+            emb = discord.Embed(title="High / Low — Result", color=discord.Color.green() if outcome=="win" else (discord.Color.gold() if outcome=="push" else discord.Color.red()))
+            emb.add_field(name="Starting Number", value=f"**{st.x}**", inline=True)
+            emb.add_field(name="Your Choice", value=choice.capitalize(), inline=True)
+            emb.add_field(name="Bet", value=fmt_tc(st.bet), inline=True)
+            emb.add_field(name="Outcome", value=result_text, inline=False)
+
+            if interaction.response.is_done():
+                if st.message:
+                    await st.message.edit(embed=emb, view=self)
+            else:
+                await interaction.response.edit_message(embed=emb, view=self)
+        finally:
+            # Always clear the active session, even if exceptions occur above
+            self.cog.active.pop(st.user_id, None)
 
 class HighLow(BaseCog):
     """High/Low numbers (1–100)."""
@@ -148,6 +157,12 @@ class HighLow(BaseCog):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.active: Dict[int, HLState] = {}  # per-user lock
+
+    async def cog_load(self):
+        """Clear any stale active sessions on cog load (bot restart)."""
+        # Clear any existing active sessions since they're lost on bot restart
+        if self.active:
+            self.active.clear()
 
     def _locked(self, user_id: int) -> Optional[str]:
         return "You already have a High/Low game in progress." if user_id in self.active else None
