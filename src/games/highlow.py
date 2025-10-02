@@ -159,7 +159,10 @@ class HighLow(BaseCog):
         self.active: Dict[int, HLState] = {}  # per-user lock
 
     async def cog_load(self):
-        """Clear any stale active sessions on cog load (bot restart)."""
+        """Initialize database and clear any stale active sessions on cog load (bot restart)."""
+        # Call parent cog_load to initialize database
+        await super().cog_load()
+        
         # Clear any existing active sessions since they're lost on bot restart
         if self.active:
             self.active.clear()
