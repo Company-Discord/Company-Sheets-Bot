@@ -159,6 +159,13 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading blackjack_v2: {e}")
 
+    # ---- Load Star Resonance ----
+    try:
+        await bot.load_extension("src.bot.extensions.star_resonance")
+        print("Loaded star_resonance cog ⚔️")
+    except Exception as e:
+        print(f"Failed loading star_resonance: {e}")
+
     # ---- Game-specific command groups removed - all commands are now flat ----
 
     # ---- Start Crate Drop Task ----
