@@ -50,7 +50,8 @@ async def random_crate_drop_task():
     while True:
         try:
             drop_count += 1
-            wait_time = random.randint(10800, 18000)
+            # wait_time = random.randint(10800, 18000) #3hrs to 5hrs
+            wait_time = random.randint(7200, 14400) #2hrs to 4hrs
             # wait_time = random.randint(90, 180)
             print(f"⏰ Next crate drop (#{drop_count}) in {wait_time // 60} minutes ({wait_time} seconds)")
             await asyncio.sleep(wait_time)
