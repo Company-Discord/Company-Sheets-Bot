@@ -15,6 +15,7 @@ import pytz
 
 from src.bot.base_cog import BaseCog
 from src.utils.utils import is_admin_or_manager, compute_scaled_earning
+from src.api.engauge_adapter import EngaugeAdapter
 from discord import app_commands
 
 # Currency emoji constant
@@ -666,7 +667,7 @@ class CurrencySystem(BaseCog):
             if role_name in role_salaries:
                 salary = role_salaries[role_name]["salary"]
                 total_salary += salary
-                salary_breakdown.append(f"**{role_name}**: {self.format_currency(salary)}")
+                salary_breakdown.append(f"**{role_name}**: {salary:,} CC")
         
         if total_salary == 0:
             embed = discord.Embed(
@@ -677,31 +678,33 @@ class CurrencySystem(BaseCog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Add salary to user's bank
+        # Update last_collect timestamp (no TC balance change)
         await self.db.update_user_balance(
             user_id, guild_id,
-            bank_delta=total_salary,
-            total_earned_delta=total_salary,
             last_collect=datetime.now(pytz.timezone('America/New_York'))
         )
-        
+
+        # Credit CC via Engauge
+        engauge = EngaugeAdapter(guild_id)
+        await engauge.credit(user_id, total_salary)
+
         # Log transaction
         settings = await self.get_guild_settings(guild_id)
         await self.log_transaction(
             user_id, guild_id, total_salary, "collect", success=True,
-            reason=f"Salary deposited to bank from {len(salary_breakdown)} role(s)"
+            reason=f"CC salary collected"
         )
-        
+
         # Create response embed
         embed = discord.Embed(
-            title=f"{TC_EMOJI} Salary Deposited!",
-            description=f"Your salary from {len(salary_breakdown)} role(s) has been deposited to your bank!",
+            title="Salary Deposited!",
+            description=f"Your salary has been credited to your CC balance!",
             color=discord.Color.green()
         )
         
         embed.add_field(
             name="💵 Total Salary",
-            value=self.format_currency(total_salary, settings.currency_symbol),
+            value=f"{total_salary:,} CC",
             inline=False
         )
         
