@@ -90,6 +90,8 @@ class Database:
                         last_crime TIMESTAMP WITH TIME ZONE,
                         last_rob TIMESTAMP WITH TIME ZONE,
                         last_collect TIMESTAMP WITH TIME ZONE,
+                        msg_count_today INTEGER NOT NULL DEFAULT 0,
+                        last_msg_payout TIMESTAMP WITH TIME ZONE,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York'),
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT (NOW() AT TIME ZONE 'America/New_York'),
                         PRIMARY KEY (user_id, guild_id)
@@ -518,7 +520,18 @@ class Database:
                 print("ℹ️ Migration 4 skipped: Columns already updated or don't exist")
         except Exception as e:
             print(f"⚠️ Migration 4 failed: {e}")
-    
+
+        # Migration 5: Add CC activity tracking columns to user_balances
+        try:
+            await conn.execute("""
+                ALTER TABLE user_balances
+                ADD COLUMN IF NOT EXISTS msg_count_today INTEGER NOT NULL DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS last_msg_payout TIMESTAMP WITH TIME ZONE
+            """)
+            print("✅ Migration 5 completed: Added msg_count_today and last_msg_payout columns")
+        except Exception as e:
+            print(f"⚠️ Migration 5 failed: {e}")
+
     async def ensure_initialized(self):
         """Ensure database is initialized before operations."""
         if not self._initialized:
@@ -609,7 +622,9 @@ class Database:
                     last_slut=row["last_slut"],
                     last_crime=row["last_crime"],
                     last_rob=row["last_rob"],
-                    last_collect=row["last_collect"]
+                    last_collect=row["last_collect"],
+                    msg_count_today=row["msg_count_today"],
+                    last_msg_payout=row["last_msg_payout"]
                 )
             else:
                 # Create new user record
@@ -1209,6 +1224,31 @@ class Database:
             
             print(f"✅ Cleaned up data older than {days} days")
     
+    async def increment_message_count(self, user_id: int, guild_id: int) -> int:
+        """Increment msg_count_today for a user and return the new count."""
+        await self.ensure_initialized()
+        await self.create_user(user_id, guild_id)
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("""
+                UPDATE user_balances
+                SET msg_count_today = msg_count_today + 1,
+                    updated_at = (NOW() AT TIME ZONE 'America/New_York')
+                WHERE user_id = $1 AND guild_id = $2
+                RETURNING msg_count_today
+            """, user_id, guild_id)
+
+    async def reset_message_count(self, user_id: int, guild_id: int, payout_time):
+        """Reset msg_count_today to 0 and record payout timestamp."""
+        await self.ensure_initialized()
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE user_balances
+                SET msg_count_today = 0,
+                    last_msg_payout = $3,
+                    updated_at = (NOW() AT TIME ZONE 'America/New_York')
+                WHERE user_id = $1 AND guild_id = $2
+            """, user_id, guild_id, payout_time)
+
     async def close(self):
         """Close the database connection pool."""
         if self._pool:

@@ -29,6 +29,8 @@ class UserBalance:
     last_crime: Optional[datetime] = None
     last_rob: Optional[datetime] = None
     last_collect: Optional[datetime] = None
+    msg_count_today: int = 0
+    last_msg_payout: Optional[datetime] = None
 
 
 @dataclass

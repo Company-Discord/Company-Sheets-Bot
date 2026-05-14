@@ -160,6 +160,13 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading blackjack_v2: {e}")
 
+    # ---- Load CC Activity (VC + message salary) ----
+    try:
+        await bot.load_extension("src.bot.extensions.cc_activity")
+        print("Loaded cc_activity cog ✅")
+    except Exception as e:
+        print(f"Failed loading cc_activity: {e}")
+
     # ---- Game-specific command groups removed - all commands are now flat ----
 
     # ---- Start Crate Drop Task ----
