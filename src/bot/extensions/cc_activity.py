@@ -19,6 +19,7 @@ import pytz
 from src.bot.base_cog import BaseCog
 from src.api.engauge_adapter import EngaugeAdapter
 
+TC_EMOJI        = os.getenv("CURRENCY_EMOJI", "💰")
 CC_VC_SALARY    = int(os.getenv("CC_VC_SALARY", "500"))
 CC_VC_MINUTES   = int(os.getenv("CC_VC_MINUTES", "30"))
 # Exponent for the VC payout curve: 0.5 = square root (diminishing returns),
@@ -123,6 +124,8 @@ class CcActivity(BaseCog):
             total_seconds = flush_segment(user_id)
             self.vc_sessions.pop(user_id, None)
             elapsed_minutes = total_seconds / 60
+            mins = int(elapsed_minutes)
+            secs = int(total_seconds % 60)
             if elapsed_minutes >= CC_VC_MINUTES:
                 payout = int(CC_VC_SALARY * (elapsed_minutes / CC_VC_MINUTES) ** CC_VC_EXPONENT)
                 try:
@@ -130,11 +133,17 @@ class CcActivity(BaseCog):
                     await engauge.credit(user_id, payout)
                     await self._notify(
                         member.guild,
-                        f"🎙️ {member.mention} earned **{payout:,} CC** for "
-                        f"{int(elapsed_minutes)} min of qualifying VC time!",
+                        f"🎙️ {member.mention} earned **{payout:,} {TC_EMOJI}** for "
+                        f"{mins}m {secs}s of qualifying VC time.",
                     )
                 except Exception as e:
                     print(f"[cc_activity] VC payout failed for {user_id}: {e}")
+            else:
+                await self._notify(
+                    member.guild,
+                    f"🔇 {member.mention} disconnected after {mins}m {secs}s "
+                    f"(needed {CC_VC_MINUTES}m — no {TC_EMOJI} earned).",
+                )
 
             # If before.channel is now solo, pause remaining members' sessions
             if non_bot_count(before.channel) < 2:
@@ -162,11 +171,10 @@ class CcActivity(BaseCog):
             # Fresh join or channel move: start session if new channel is qualifying
             if non_bot_count(after.channel) >= 2:
                 resume_session(user_id)
-                # Also resume anyone paused in this channel who is now qualifying again
+                # Resume paused sessions, or start fresh for members who joined solo
                 for m in after.channel.members:
-                    if not m.bot and m.id != user_id and m.id in self.vc_sessions:
-                        _, seg_start, _ = self.vc_sessions[m.id]
-                        if seg_start is None:
+                    if not m.bot and m.id != user_id:
+                        if m.id not in self.vc_sessions or self.vc_sessions[m.id][1] is None:
                             resume_session(m.id)
             return
 
@@ -200,7 +208,7 @@ class CcActivity(BaseCog):
             await engauge.credit(user_id, CC_MSG_SALARY)
             await self._notify(
                 message.guild,
-                f"💬 {message.author.mention} earned **{CC_MSG_SALARY:,} CC** for sending "
+                f"💬 {message.author.mention} earned **{CC_MSG_SALARY:,} {TC_EMOJI}** for sending "
                 f"{CC_MSG_THRESHOLD} messages today!",
             )
         except Exception as e:
