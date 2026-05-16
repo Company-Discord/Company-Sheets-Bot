@@ -87,6 +87,10 @@ class CcActivity(BaseCog):
         if member.bot:
             return
 
+        # Mute/deafen/server-deafen with no channel change — nothing to do
+        if before.channel == after.channel:
+            return
+
         now = datetime.now(pytz.UTC)
         user_id = member.id
         guild_id = member.guild.id
@@ -199,10 +203,6 @@ class CcActivity(BaseCog):
 
             # --- user joined or moved to a new channel ---
             if after.channel is not None:
-                # Mute/deafen/server-deafen with no channel change — nothing to do
-                if before.channel == after.channel:
-                    return
-
                 # Moving from one channel to another: freeze old segment but carry accumulated time
                 if before.channel is not None:
                     dbg(f"  moved — banking {acc_str(user_id)}")
