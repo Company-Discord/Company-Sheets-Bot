@@ -32,6 +32,10 @@ CC_MSG_THRESHOLD = int(os.getenv("CC_MSG_THRESHOLD", "50"))
 _raw_ch = os.getenv("CC_ACTIVITY_CHANNEL_ID", "").strip()
 CC_ACTIVITY_CHANNEL_ID: Optional[int] = int(_raw_ch) if _raw_ch.isdigit() else None
 
+# AFK channel: time spent here never counts toward VC salary.
+_raw_afk = os.getenv("CC_AFK_CHANNEL_ID", "").strip()
+CC_AFK_CHANNEL_ID: Optional[int] = int(_raw_afk) if _raw_afk.isdigit() else None
+
 EST = pytz.timezone("America/New_York")
 
 
@@ -180,7 +184,7 @@ class CcActivity(BaseCog):
                         await engauge.credit(user_id, payout)
                         await self._notify(
                             member.guild,
-                            f"🎙️ {member.mention} earned **{payout:,} {TC_EMOJI}** for "
+                            f"🎙️ {member.display_name} earned **{payout:,} {TC_EMOJI}** for "
                             f"{mins}m {secs}s of qualifying VC time.",
                         )
                     except Exception as e:
@@ -188,7 +192,7 @@ class CcActivity(BaseCog):
                 else:
                     await self._notify(
                         member.guild,
-                        f"🔇 {member.mention} disconnected after {mins}m {secs}s "
+                        f"🔇 {member.display_name} disconnected after {mins}m {secs}s "
                         f"(needed {CC_VC_MINUTES}m — no {TC_EMOJI} earned).",
                     )
 
@@ -214,6 +218,11 @@ class CcActivity(BaseCog):
                         for m in before.channel.members:
                             if not m.bot:
                                 pause_session(m.id)
+
+                # Entering the AFK channel: freeze accumulated time, start nothing.
+                if CC_AFK_CHANNEL_ID is not None and after.channel.id == CC_AFK_CHANNEL_ID:
+                    dbg(f"  entered AFK channel — session paused, no new tracking")
+                    return
 
                 # Fresh join or channel move: start session if new channel is qualifying
                 after_count = non_bot_count(after.channel)
@@ -259,7 +268,7 @@ class CcActivity(BaseCog):
             await engauge.credit(user_id, CC_MSG_SALARY)
             await self._notify(
                 message.guild,
-                f"💬 {message.author.mention} earned **{CC_MSG_SALARY:,} {TC_EMOJI}** for sending "
+                f"💬 {message.author.display_name} earned **{CC_MSG_SALARY:,} {TC_EMOJI}** for sending "
                 f"{CC_MSG_THRESHOLD} messages today!",
             )
         except Exception as e:
