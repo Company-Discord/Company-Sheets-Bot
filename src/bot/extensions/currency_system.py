@@ -20,6 +20,7 @@ from discord import app_commands
 
 # Currency emoji constant
 TC_EMOJI = os.getenv('TC_EMOJI', '💰')
+CURRENCY_EMOJI = os.getenv('CURRENCY_EMOJI', '💰')
 
 
 """
@@ -184,6 +185,7 @@ class CurrencySystem(BaseCog):
     # ================= Work Command =================
 
     tc = app_commands.Group(name="tc", description="Currency system commands")
+    cc = app_commands.Group(name="cc", description="CC commands")
 
     @tc.command(name="work", description="Earn money through legitimate work")
     async def work(self, interaction: discord.Interaction):
@@ -615,7 +617,7 @@ class CurrencySystem(BaseCog):
         await interaction.followup.send(embed=embed)
     
     # ================= Collect Command =================
-    @tc.command(name="collect", description="Collect salary from your roles")
+    @cc.command(name="collect", description="Collect salary from your roles")
     async def collect(self, interaction: discord.Interaction):
         """Collect salary from user's roles."""
         user_id = interaction.user.id
@@ -667,7 +669,7 @@ class CurrencySystem(BaseCog):
             if role_name in role_salaries:
                 salary = role_salaries[role_name]["salary"]
                 total_salary += salary
-                salary_breakdown.append(f"**{role_name}**: {salary:,} CC")
+                salary_breakdown.append(f"**{role_name}**: {CURRENCY_EMOJI} {salary:,}")
         
         if total_salary == 0:
             embed = discord.Embed(
@@ -701,10 +703,10 @@ class CurrencySystem(BaseCog):
             description=f"Your salary has been credited to your CC balance!",
             color=discord.Color.green()
         )
-        
+
         embed.add_field(
             name="💵 Total Salary",
-            value=f"{total_salary:,} CC",
+            value=f"{CURRENCY_EMOJI} {total_salary:,}",
             inline=False
         )
         
