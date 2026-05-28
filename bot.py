@@ -33,7 +33,8 @@ tree = bot.tree
 
 # ================= Crate Drop System =================
 async def random_crate_drop_task():
-    """Drop crates at random intervals between 65–180 minutes."""
+    """Drop crates at random intervals between 4–6 hours."""
+    import datetime
     server_id = int(os.getenv("DISCORD_GUILD_ID", 0))
     if not server_id:
         print("⚠️  DISCORD_GUILD_ID not set. Crate drops disabled.")
@@ -50,14 +51,13 @@ async def random_crate_drop_task():
     while True:
         try:
             drop_count += 1
-            # wait_time = random.randint(10800, 18000) #3hrs to 5hrs
-            wait_time = random.randint(14400, 21600) #2hrs to 4hrs
-            # wait_time = random.randint(90, 180)
-            print(f"⏰ Next crate drop (#{drop_count}) in {wait_time // 60} minutes ({wait_time} seconds)")
+            wait_time = random.randint(14400, 21600)  # 4–6 hours
+            fire_at = datetime.datetime.utcnow() + datetime.timedelta(seconds=wait_time)
+            print(f"⏰ Next crate drop (#{drop_count}) in {wait_time // 60} min — scheduled for {fire_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
             await asyncio.sleep(wait_time)
-            print(f"🎁 Dropping random crate (#{drop_count})...")
+            print(f"🎁 Dropping random crate (#{drop_count}) at {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC...")
             result = await adapter.drop_crate()
-            print(f"✅ Crate #{drop_count} dropped successfully: {result}")
+            print(f"✅ Crate #{drop_count} dropped successfully: id={result.get('crate_id')} {result}")
         except Exception as e:
             print(f"❌ Error in crate drop task (attempt #{drop_count}): {e}")
             print("⏳ Waiting 5 minutes before retrying...")
