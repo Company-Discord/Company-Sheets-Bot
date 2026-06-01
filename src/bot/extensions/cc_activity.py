@@ -91,10 +91,6 @@ class CcActivity(BaseCog):
         if member.bot:
             return
 
-        # Mute/deafen/server-deafen with no channel change — nothing to do
-        if before.channel == after.channel:
-            return
-
         now = datetime.now(pytz.UTC)
         user_id = member.id
         guild_id = member.guild.id
@@ -132,13 +128,7 @@ class CcActivity(BaseCog):
         def non_bot_count(channel: discord.VoiceChannel) -> int:
             return sum(1 for m in channel.members if not m.bot)
 
-        # Event header
-        before_ch = f"#{before.channel.name}" if before.channel else "—"
-        after_ch  = f"#{after.channel.name}"  if after.channel  else "—"
-        dbg(f"{member.display_name}: {before_ch} → {after_ch}")
-
         def flush_segment(uid: int) -> float:
-            """Freeze the active segment for a user and return total accumulated seconds."""
             if uid not in self.vc_sessions:
                 return 0.0
             accumulated, seg_start, gid = self.vc_sessions[uid]
@@ -148,7 +138,6 @@ class CcActivity(BaseCog):
             return accumulated
 
         def pause_session(uid: int):
-            """Freeze active segment without removing the session (user is now solo)."""
             flush_segment(uid)
             if uid in self.vc_sessions:
                 accumulated, _, gid = self.vc_sessions[uid]
@@ -156,7 +145,6 @@ class CcActivity(BaseCog):
                 dbg(f"  paused {name(uid)}: {accumulated/60:.1f}m banked")
 
         def resume_session(uid: int):
-            """Start a new qualifying segment from now."""
             if uid in self.vc_sessions:
                 accumulated, prev_seg, gid = self.vc_sessions[uid]
                 if prev_seg is not None:
@@ -167,6 +155,31 @@ class CcActivity(BaseCog):
             else:
                 dbg(f"  started {name(uid)}: fresh session")
                 self.vc_sessions[uid] = (0.0, now, guild_id)
+
+        # Same channel — only care about mute/deafen state changes
+        if before.channel == after.channel:
+            was_muted = before.self_mute or before.mute or before.self_deaf or before.deaf
+            is_muted  = after.self_mute  or after.mute  or after.self_deaf  or after.deaf
+            if was_muted == is_muted:
+                return
+
+            if is_muted:
+                if user_id in self.vc_sessions:
+                    dbg(f"{member.display_name}: muted — pausing session")
+                    pause_session(user_id)
+                    await flush_debug()
+            else:
+                channel = after.channel
+                if channel is not None and non_bot_count(channel) >= 2:
+                    dbg(f"{member.display_name}: unmuted — resuming session")
+                    resume_session(user_id)
+                    await flush_debug()
+            return
+
+        # Event header
+        before_ch = f"#{before.channel.name}" if before.channel else "—"
+        after_ch  = f"#{after.channel.name}"  if after.channel  else "—"
+        dbg(f"{member.display_name}: {before_ch} → {after_ch}")
 
         try:
             # --- user disconnected entirely ---
@@ -227,11 +240,18 @@ class CcActivity(BaseCog):
                 # Fresh join or channel move: start session if new channel is qualifying
                 after_count = non_bot_count(after.channel)
                 if after_count >= 2:
-                    resume_session(user_id)
+                    if not (after.self_mute or after.mute or after.self_deaf or after.deaf):
+                        resume_session(user_id)
+                    else:
+                        dbg(f"  {member.display_name} is muted/deafened — session not started")
                     for m in after.channel.members:
                         if not m.bot and m.id != user_id:
                             if m.id not in self.vc_sessions or self.vc_sessions[m.id][1] is None:
-                                resume_session(m.id)
+                                vs = m.voice
+                                if vs and not (vs.self_mute or vs.mute or vs.self_deaf or vs.deaf):
+                                    resume_session(m.id)
+                                else:
+                                    dbg(f"  {name(m.id)} is muted/deafened — not resuming")
                 else:
                     dbg(f"  {after_ch} is solo — no session started")
                 return
