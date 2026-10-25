@@ -167,6 +167,14 @@ async def setup_hook():
     except Exception as e:
         print(f"Failed loading cc_activity: {e}")
 
+    # ---- Optional member dashboard (apply its migrations before enabling) ----
+    if os.getenv("DASHBOARD_URL") or os.getenv("AION2_DISCORD_COMMANDS", "false").lower() == "true":
+        try:
+            await bot.load_extension("src.bot.extensions.member_dashboard")
+            print("Loaded member dashboard cog")
+        except Exception as e:
+            print(f"Failed loading member dashboard: {e}")
+
     # ---- Game-specific command groups removed - all commands are now flat ----
 
     # ---- Start Crate Drop Task ----
@@ -188,7 +196,8 @@ async def on_ready():
         except Exception as e:
             print(f"Emoji cache warmup skipped: {e}")
 
-        # Sync once per process — DO NOT clear/copy; just sync
+        # Sync once per process. Copy global commands into the development guild
+        # so option changes are available there without waiting for global rollout.
         if not getattr(bot, "_did_initial_sync", False):
             # Always sync globally first
             global_synced = await bot.tree.sync()
@@ -197,6 +206,7 @@ async def on_ready():
             # If DEV_GUILD_ID is set, also sync to the specific guild
             if DEV_GUILD_ID:
                 g = discord.Object(id=int(DEV_GUILD_ID))
+                bot.tree.copy_global_to(guild=g)
                 guild_synced = await bot.tree.sync(guild=g)
                 print(f"Guild sync → {len(guild_synced)} commands: {[c.name for c in guild_synced]}")
             
@@ -233,6 +243,7 @@ async def sync_commands(interaction: discord.Interaction):
         # If DEV_GUILD_ID is set, also sync to the specific guild
         if DEV_GUILD_ID:
             g = discord.Object(id=int(DEV_GUILD_ID))
+            bot.tree.copy_global_to(guild=g)
             guild_synced = await bot.tree.sync(guild=g)
             guild_names = [c.name for c in guild_synced]
             print(f"Guild sync → {len(guild_synced)} commands: {guild_names}")

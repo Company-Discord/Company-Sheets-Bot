@@ -1,0 +1,6 @@
+{
+  "profile": {"characterId":"fixture-id=", "characterName":"Fixture Templar", "characterLevel":45,
+    "className":"Templar", "serverName":"Test world", "combatPower":175000,
+    "profileImage":"/fixtures/portrait.png"},
+  "stat":{"statList":[{"type":"ItemLevel","value":2400}]}
+}

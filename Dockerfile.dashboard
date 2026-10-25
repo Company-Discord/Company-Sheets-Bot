@@ -1,0 +1,17 @@
+FROM node:22-alpine AS frontend
+WORKDIR /web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements-dashboard.txt ./
+RUN pip install --no-cache-dir -r requirements-dashboard.txt
+COPY src/dashboard ./src/dashboard
+COPY src/__init__.py ./src/__init__.py
+COPY --from=frontend /web/dist ./web/dist
+ENV PORT=8000
+EXPOSE 8000
+CMD ["python", "-m", "src.dashboard.serve"]

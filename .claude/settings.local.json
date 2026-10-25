@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep -l \"crate\\\\|gold\")",
+      "WebFetch(domain:docs.engau.ge)",
+      "WebSearch",
+      "Bash(gh repo *)",
+      "Bash(gh api *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:kaplayjs.com)",
+      "WebFetch(domain:colyseus.io)",
+      "WebFetch(domain:docs.colyseus.io)"
+    ]
+  }
+}
